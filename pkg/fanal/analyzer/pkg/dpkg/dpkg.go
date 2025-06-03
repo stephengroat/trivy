@@ -199,7 +199,7 @@ func (a dpkgAnalyzer) parseDpkgStatus(filePath string, r io.Reader, digests map[
 			continue
 		}
 
-		pkg = a.parseDpkgPkg(header)
+		pkg, _ = a.parseDpkgPkg(header)
 		if pkg != nil {
 			pkg.Digest = digests[pkg.ID]
 			pkgs[pkg.ID] = pkg
@@ -223,9 +223,9 @@ func (a dpkgAnalyzer) parseDpkgStatus(filePath string, r io.Reader, digests map[
 	}, nil
 }
 
-func (a dpkgAnalyzer) parseDpkgPkg(header textproto.MIMEHeader) *types.Package {
+func (a dpkgAnalyzer) parseDpkgPkg(header textproto.MIMEHeader) (*types.Package, types.Packages) {
 	if isInstalled := a.parseStatus(header.Get("Status")); !isInstalled {
-		return nil
+		return nil, nil
 	}
 
 	pkg := &types.Package{
@@ -236,7 +236,7 @@ func (a dpkgAnalyzer) parseDpkgPkg(header textproto.MIMEHeader) *types.Package {
 		Arch:       header.Get("Architecture"),
 	}
 	if pkg.Name == "" || pkg.Version == "" {
-		return nil
+		return nil, nil
 	}
 
 	// Source line (Optional)
@@ -267,7 +267,7 @@ func (a dpkgAnalyzer) parseDpkgPkg(header textproto.MIMEHeader) *types.Package {
 	if v, err := debVersion.NewVersion(pkg.Version); err != nil {
 		a.logger.Warn("Invalid version", log.String("OS", "debian"),
 			log.String("package", pkg.Name), log.String("version", pkg.Version))
-		return nil
+		return nil, nil
 	} else {
 		pkg.ID = a.pkgID(pkg.Name, pkg.Version)
 		pkg.Version = v.Version()
@@ -278,14 +278,25 @@ func (a dpkgAnalyzer) parseDpkgPkg(header textproto.MIMEHeader) *types.Package {
 	if v, err := debVersion.NewVersion(pkg.SrcVersion); err != nil {
 		a.logger.Warn("Invalid source version", log.String("OS", "debian"),
 			log.String("package", pkg.Name), log.String("version", pkg.SrcVersion))
-		return nil
+		return nil, nil
 	} else {
 		pkg.SrcVersion = v.Version()
 		pkg.SrcEpoch = v.Epoch()
 		pkg.SrcRelease = v.Revision()
 	}
 
-	return pkg
+	builtUsingPackages := types.Packages{}
+	for _, builtUsingPackage := range a.parseBuiltUsing(header.Get("Built-Using")) {
+		builtUsingPackages = append(builtUsingPackages, types.Package{
+			ID:   builtUsingPackage,
+			Arch: header.Get("Architecture"),
+		})
+	}
+	if len(builtUsingPackages) > 0 {
+		a.logger.Warn("test", log.Any("test", builtUsingPackages))
+	}
+
+	return pkg, builtUsingPackages
 }
 
 func (a dpkgAnalyzer) Required(filePath string, _ os.FileInfo) bool {
@@ -333,6 +344,31 @@ func (a dpkgAnalyzer) parseDepends(s string) []string {
 	return dependencies
 }
 
+func (a dpkgAnalyzer) parseBuiltUsing(s string) types.Packages {
+	if s == "" {
+		return nil
+	}
+	// e.g. debconf (= 0.5), ...
+	var dependencies types.Packages
+	depends := strings.Split(s, ",")
+	for _, dep := range depends {
+		pkg, version := a.getVersionRequirement(dep)
+
+		dependencies = append(dependencies, types.Package{Name: pkg, Version: version})
+	}
+	return dependencies
+}
+
+func (a dpkgAnalyzer) getVersionRequirement(s string) (string, string) {
+	// e.g.
+	//	libapt-pkg6.0 (= 2.2.4) => libapt-pkg6.0, 2.2.4
+	pkgName, pkgVersion, found := strings.Cut(s, "(= ")
+	if found {
+		return strings.TrimSpace(pkgName), strings.TrimSuffix(pkgVersion, ")")
+	}
+	return s, ""
+}
+
 func (a dpkgAnalyzer) trimVersionRequirement(s string) string {
 	// e.g.
 	//	libapt-pkg6.0 (>= 2.2.4) => libapt-pkg6.0
@@ -341,6 +377,7 @@ func (a dpkgAnalyzer) trimVersionRequirement(s string) string {
 	return s
 }
 
+// TODO figure out how to handle Built-using
 func (a dpkgAnalyzer) consolidateDependencies(pkgs map[string]*types.Package, pkgIDs map[string]string) {
 	for _, pkg := range pkgs {
 		// e.g. libc6 => libc6@2.31-13+deb11u4
