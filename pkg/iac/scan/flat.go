@@ -6,6 +6,7 @@ import (
 )
 
 type FlatResult struct {
+	Deprecated      bool               `json:"deprecated,omitempty"`
 	RuleID          string             `json:"rule_id"`
 	LongID          string             `json:"long_id"`
 	RuleSummary     string             `json:"rule_description"`
@@ -17,11 +18,11 @@ type FlatResult struct {
 	Description     string             `json:"description"`
 	RangeAnnotation string             `json:"-"`
 	Severity        severity.Severity  `json:"severity"`
-	Warning         bool               `json:"warning"`
 	Status          Status             `json:"status"`
 	Resource        string             `json:"resource"`
 	Occurrences     []Occurrence       `json:"occurrences,omitempty"`
 	Location        FlatRange          `json:"location"`
+	RenderedCause   RenderedCause      `json:"rendered_cause"`
 }
 
 type FlatRange struct {
@@ -48,6 +49,7 @@ func (r *Result) Flatten() FlatResult {
 	}
 
 	return FlatResult{
+		Deprecated:      r.rule.Deprecated,
 		RuleID:          r.rule.AVDID,
 		LongID:          r.Rule().LongID(),
 		RuleSummary:     r.rule.Summary,
@@ -62,11 +64,11 @@ func (r *Result) Flatten() FlatResult {
 		Status:          r.status,
 		Resource:        resMetadata.Reference(),
 		Occurrences:     r.Occurrences(),
-		Warning:         r.IsWarning(),
 		Location: FlatRange{
 			Filename:  rng.GetFilename(),
 			StartLine: rng.GetStartLine(),
 			EndLine:   rng.GetEndLine(),
 		},
+		RenderedCause: r.renderedCause,
 	}
 }

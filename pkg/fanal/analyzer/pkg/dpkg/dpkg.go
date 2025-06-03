@@ -11,12 +11,12 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 
 	debVersion "github.com/knqyf263/go-deb-version"
 	"github.com/samber/lo"
-	"golang.org/x/exp/slices"
 	"golang.org/x/xerrors"
 
 	"github.com/aquasecurity/trivy/pkg/digest"
@@ -61,17 +61,17 @@ func (a dpkgAnalyzer) PostAnalyze(_ context.Context, input analyzer.PostAnalysis
 	// parse `available` file to get digest for packages
 	digests, err := a.parseDpkgAvailable(input.FS)
 	if err != nil {
-		a.logger.Debug("Unable to parse the available file", log.String("file", availableFile), log.Err(err))
+		a.logger.Debug("Unable to parse the available file", log.FilePath(availableFile), log.Err(err))
 	}
 
-	required := func(path string, d fs.DirEntry) bool {
+	required := func(path string, _ fs.DirEntry) bool {
 		return path != availableFile
 	}
 
 	packageFiles := make(map[string][]string)
 
 	// parse other files
-	err = fsutils.WalkDir(input.FS, ".", required, func(path string, d fs.DirEntry, r io.Reader) error {
+	err = fsutils.WalkDir(input.FS, ".", required, func(path string, _ fs.DirEntry, r io.Reader) error {
 		// parse list files
 		if a.isListFile(filepath.Split(path)) {
 			scanner := bufio.NewScanner(r)
@@ -169,7 +169,7 @@ func (a dpkgAnalyzer) parseDpkgAvailable(fsys fs.FS) (map[string]digest.Digest, 
 	for scanner.Scan() {
 		header, err := scanner.Header()
 		if !errors.Is(err, io.EOF) && err != nil {
-			a.logger.Warn("Parse error", log.String("file", availableFile), log.Err(err))
+			a.logger.Warn("Parse error", log.FilePath(availableFile), log.Err(err))
 			continue
 		}
 		name, version, checksum := header.Get("Package"), header.Get("Version"), header.Get("SHA256")
@@ -195,7 +195,7 @@ func (a dpkgAnalyzer) parseDpkgStatus(filePath string, r io.Reader, digests map[
 	for scanner.Scan() {
 		header, err := scanner.Header()
 		if !errors.Is(err, io.EOF) && err != nil {
-			a.logger.Warn("Parse error", log.String("file", filePath), log.Err(err))
+			a.logger.Warn("Parse error", log.FilePath(filePath), log.Err(err))
 			continue
 		}
 
@@ -288,7 +288,7 @@ func (a dpkgAnalyzer) parseDpkgPkg(header textproto.MIMEHeader) (*types.Package,
 	builtUsingPackages := types.Packages{}
 	for _, builtUsingPackage := range a.parseBuiltUsing(header.Get("Built-Using")) {
 		builtUsingPackages = append(builtUsingPackages, types.Package{
-			ID:   builtUsingPackage,
+			ID:   builtUsingPackage.ID,
 			Arch: header.Get("Architecture"),
 		})
 	}
@@ -408,4 +408,14 @@ func (a dpkgAnalyzer) Type() analyzer.Type {
 
 func (a dpkgAnalyzer) Version() int {
 	return analyzerVersion
+}
+
+// StaticPaths returns a list of static file paths to analyze
+func (a dpkgAnalyzer) StaticPaths() []string {
+	return []string{
+		statusFile,
+		availableFile,
+		statusDir,
+		infoDir,
+	}
 }

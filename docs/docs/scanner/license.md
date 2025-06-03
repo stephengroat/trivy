@@ -23,7 +23,7 @@ To enable extended license scanning, you can use `--license-full`.
 In addition to package licenses, Trivy scans source code files, Markdown documents, text files and `LICENSE` documents to identify license usage within the image or filesystem.
 
 By default, Trivy only classifies licenses that are matched with a confidence level of 0.9 or more by the classifier.
-To configure the confidence level, you can use `--license-confidence-level`. This enables us to classify licenses that might be matched with a lower confidence level by the classifer. 
+To configure the confidence level, you can use `--license-confidence-level`. This enables us to classify licenses that might be matched with a lower confidence level by the classifier. 
 
 !!! note
     The full license scanning is expensive. It takes a while.
@@ -341,6 +341,28 @@ license:
   
   permissive: []
 ```
+
+#### Text licenses
+By default, Trivy categorizes a license as UNKNOWN if it cannot determine the license name from the license text.
+
+To define a category for a text license, you need to add license with the `text://` prefix to license classification.
+For example:
+```yaml
+license:
+  forbidden:
+    - "text://Text of Apache Software Foundation License"
+```
+
+But a text license can by large. So for these cases Trivy supports using `regex` in license classification.
+For example:
+```yaml
+license:
+  forbidden:
+    - "text://.* Apache Software .*"
+```
+
+!!! note
+    `regex` is only used for text licenses and can't be used to configure license IDs.
 
 [^1]: See the list of supported language files [here](../coverage/language/index.md).
 [^2]: Some lock files require additional files (e.g. files from the cache directory) to detect licenses. Check [coverage][coverage] for more information.

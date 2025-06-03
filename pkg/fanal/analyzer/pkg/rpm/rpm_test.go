@@ -1,19 +1,18 @@
 package rpm
 
 import (
-	"context"
 	"errors"
 	"os"
 	"strings"
 	"testing"
 
-	"github.com/aquasecurity/trivy/pkg/fanal/analyzer"
-	"github.com/aquasecurity/trivy/pkg/fanal/types"
 	rpmdb "github.com/knqyf263/go-rpmdb/pkg"
 	"github.com/samber/lo"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/stretchr/testify/assert"
+	"github.com/aquasecurity/trivy/pkg/fanal/analyzer"
+	"github.com/aquasecurity/trivy/pkg/fanal/types"
 )
 
 type mockRPMDB struct {
@@ -56,7 +55,7 @@ func Test_rpmPkgAnalyzer_Analyze(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			a := rpmPkgAnalyzer{}
-			got, err := a.Analyze(context.Background(), tt.input)
+			got, err := a.Analyze(t.Context(), tt.input)
 			if tt.wantErr != "" {
 				assert.ErrorContains(t, err, tt.wantErr)
 				return
@@ -97,9 +96,9 @@ func Test_splitFileName(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			gotName, gotVer, gotRel, err := splitFileName(tt.filename)
 			if tt.wantErr {
-				assert.Error(t, err)
+				require.Error(t, err)
 			} else {
-				assert.NoError(t, err)
+				require.NoError(t, err)
 			}
 			assert.Equal(t, tt.wantName, gotName)
 			assert.Equal(t, tt.wantVer, gotVer)
@@ -273,7 +272,7 @@ func Test_rpmPkgAnalyzer_listPkgs(t *testing.T) {
 			}
 
 			a := newRPMPkgAnalyzer()
-			gotPkgs, gotFiles, err := a.listPkgs(context.Background(), m)
+			gotPkgs, gotFiles, err := a.listPkgs(t.Context(), m)
 			if tt.wantErr != "" {
 				assert.ErrorContains(t, err, tt.wantErr)
 				return

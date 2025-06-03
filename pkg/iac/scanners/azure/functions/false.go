@@ -1,5 +1,5 @@
 package functions
 
-func False(args ...interface{}) interface{} {
+func False(_ ...any) any {
 	return false
 }

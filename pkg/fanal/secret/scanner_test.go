@@ -6,11 +6,12 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/aquasecurity/trivy/pkg/fanal/secret"
 	"github.com/aquasecurity/trivy/pkg/fanal/types"
 	"github.com/aquasecurity/trivy/pkg/log"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 func TestMain(m *testing.M) {
@@ -314,6 +315,59 @@ func TestSecretScanner(t *testing.T) {
 			},
 		},
 	}
+	wantFindingMyAwsAccessKey := types.SecretFinding{
+		RuleID:    "aws-secret-access-key",
+		Category:  secret.CategoryAWS,
+		Title:     "AWS Secret Access Key",
+		Severity:  "CRITICAL",
+		StartLine: 1,
+		EndLine:   1,
+		Match:     `MyAWS_secret_KEY="****************************************"`,
+		Code: types.Code{
+			Lines: []types.Line{
+				{
+					Number:      1,
+					Content:     "MyAWS_secret_KEY=\"****************************************\"",
+					Highlighted: "MyAWS_secret_KEY=\"****************************************\"",
+					IsCause:     true,
+					FirstCause:  true,
+					LastCause:   true,
+				},
+				{
+					Number:      2,
+					Content:     "our*********************************************************************************************",
+					Highlighted: "our*********************************************************************************************",
+				},
+			},
+		},
+	}
+
+	wantFindingMyGitHubPAT := types.SecretFinding{
+		RuleID:    "github-fine-grained-pat",
+		Category:  secret.CategoryGitHub,
+		Title:     "GitHub Fine-grained personal access tokens",
+		Severity:  "CRITICAL",
+		StartLine: 2,
+		EndLine:   2,
+		Match:     "our*********************************************************************************************",
+		Code: types.Code{
+			Lines: []types.Line{
+				{
+					Number:      1,
+					Content:     "MyAWS_secret_KEY=\"****************************************\"",
+					Highlighted: "MyAWS_secret_KEY=\"****************************************\"",
+				},
+				{
+					Number:      2,
+					Content:     "our*********************************************************************************************",
+					Highlighted: "our*********************************************************************************************",
+					IsCause:     true,
+					FirstCause:  true,
+					LastCause:   true,
+				},
+			},
+		},
+	}
 	wantFindingGHButDisableAWS := types.SecretFinding{
 		RuleID:    "github-pat",
 		Category:  secret.CategoryGitHub,
@@ -352,8 +406,8 @@ func TestSecretScanner(t *testing.T) {
 			Lines: []types.Line{
 				{
 					Number:      1,
-					Content:     "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa GITHUB_PAT=**************************************** bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-					Highlighted: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa GITHUB_PAT=**************************************** bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+					Content:     "aaaaaaaaaaaaaaaaaa GITHUB_PAT=**************************************** bbbbbbbbbbbbbbbbbbb",
+					Highlighted: "aaaaaaaaaaaaaaaaaa GITHUB_PAT=**************************************** bbbbbbbbbbbbbbbbbbb",
 					IsCause:     true,
 					FirstCause:  true,
 					LastCause:   true,
@@ -418,6 +472,7 @@ func TestSecretScanner(t *testing.T) {
 			},
 		},
 	}
+
 	wantFinding10 := types.SecretFinding{
 		RuleID:    "aws-secret-access-key",
 		Category:  secret.CategoryAWS,
@@ -461,8 +516,8 @@ func TestSecretScanner(t *testing.T) {
 			Lines: []types.Line{
 				{
 					Number:      1,
-					Content:     "{\"key\": \"-----BEGIN RSA PRIVATE KEY-----**************************************************************************************************************************-----END RSA PRIVATE KEY-----\\n\"}",
-					Highlighted: "{\"key\": \"-----BEGIN RSA PRIVATE KEY-----**************************************************************************************************************************-----END RSA PRIVATE KEY-----\\n\"}",
+					Content:     "----BEGIN RSA PRIVATE KEY-----**************************************************************************************************************************-----END RSA PRIVATE",
+					Highlighted: "----BEGIN RSA PRIVATE KEY-----**************************************************************************************************************************-----END RSA PRIVATE",
 					IsCause:     true,
 					FirstCause:  true,
 					LastCause:   true,
@@ -482,8 +537,8 @@ func TestSecretScanner(t *testing.T) {
 			Lines: []types.Line{
 				{
 					Number:      1,
-					Content:     "-----BEGIN RSA PRIVATE KEY-----****************************************************************************************************************************************************************************************-----END RSA PRIVATE KEY-----",
-					Highlighted: "-----BEGIN RSA PRIVATE KEY-----****************************************************************************************************************************************************************************************-----END RSA PRIVATE KEY-----",
+					Content:     "----BEGIN RSA PRIVATE KEY-----****************************************************************************************************************************************************************************************-----END RSA PRIVATE",
+					Highlighted: "----BEGIN RSA PRIVATE KEY-----****************************************************************************************************************************************************************************************-----END RSA PRIVATE",
 					IsCause:     true,
 					FirstCause:  true,
 					LastCause:   true,
@@ -503,8 +558,53 @@ func TestSecretScanner(t *testing.T) {
 			Lines: []types.Line{
 				{
 					Number:      1,
-					Content:     "-----BEGIN RSA PRIVATE KEY-----**************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************-----END RSA PRIVATE KEY-----",
-					Highlighted: "-----BEGIN RSA PRIVATE KEY-----**************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************-----END RSA PRIVATE KEY-----",
+					Content:     "----BEGIN RSA PRIVATE KEY-----**************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************-----END RSA PRIVATE",
+					Highlighted: "----BEGIN RSA PRIVATE KEY-----**************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************-----END RSA PRIVATE",
+					IsCause:     true,
+					FirstCause:  true,
+					LastCause:   true,
+				},
+				{
+					Number:      2,
+					Content:     "",
+					Highlighted: "",
+					IsCause:     false,
+					FirstCause:  false,
+					LastCause:   false,
+				},
+			},
+		},
+	}
+	wantFindingMinimumAsymmSecretKey := types.SecretFinding{
+		RuleID:    "private-key",
+		Category:  secret.CategoryAsymmetricPrivateKey,
+		Title:     "Asymmetric Private Key",
+		Severity:  "HIGH",
+		StartLine: 6,
+		EndLine:   6,
+		Match:     "-----BEGIN PRIVATE KEY-----********************************-----END PRIVATE KEY-----",
+		Code: types.Code{
+			Lines: []types.Line{
+				{
+					Number:      4,
+					Content:     "",
+					Highlighted: "",
+					IsCause:     false,
+					FirstCause:  false,
+					LastCause:   false,
+				},
+				{
+					Number:      5,
+					Content:     "## Theoretically Asymmetric Private Key of minimum length (RSA 128 bits)",
+					Highlighted: "## Theoretically Asymmetric Private Key of minimum length (RSA 128 bits)",
+					IsCause:     false,
+					FirstCause:  false,
+					LastCause:   false,
+				},
+				{
+					Number:      6,
+					Content:     "-----BEGIN PRIVATE KEY-----********************************-----END PRIVATE KEY-----",
+					Highlighted: "-----BEGIN PRIVATE KEY-----********************************-----END PRIVATE KEY-----",
 					IsCause:     true,
 					FirstCause:  true,
 					LastCause:   true,
@@ -605,6 +705,117 @@ func TestSecretScanner(t *testing.T) {
 			},
 		},
 	}
+	wantFindingPrivatePackagistOrgReadToken := types.SecretFinding{
+		RuleID:    "private-packagist-token",
+		Category:  secret.CategoryPrivatePackagist,
+		Title:     "Private Packagist token",
+		Severity:  "HIGH",
+		StartLine: 1,
+		EndLine:   1,
+		Match:     "ORG_READ_TOKEN=**********************************************************************************",
+		Code: types.Code{
+			Lines: []types.Line{
+				{
+					Number:      1,
+					Content:     "ORG_READ_TOKEN=**********************************************************************************",
+					Highlighted: "ORG_READ_TOKEN=**********************************************************************************",
+					IsCause:     true,
+					FirstCause:  true,
+					LastCause:   true,
+				},
+				{
+					Number:      2,
+					Content:     "ORG_WRITE_TOKEN=**********************************************************************************",
+					Highlighted: "ORG_WRITE_TOKEN=**********************************************************************************",
+					IsCause:     false,
+					FirstCause:  false,
+					LastCause:   false,
+				},
+			},
+		},
+	}
+	wantFindingPrivatePackagistOrgUpdateToken := types.SecretFinding{
+		RuleID:    "private-packagist-token",
+		Category:  secret.CategoryPrivatePackagist,
+		Title:     "Private Packagist token",
+		Severity:  "HIGH",
+		StartLine: 2,
+		EndLine:   2,
+		Match:     "ORG_WRITE_TOKEN=**********************************************************************************",
+		Code: types.Code{
+			Lines: []types.Line{
+				{
+					Number:      1,
+					Content:     "ORG_READ_TOKEN=**********************************************************************************",
+					Highlighted: "ORG_READ_TOKEN=**********************************************************************************",
+					IsCause:     false,
+					FirstCause:  false,
+					LastCause:   false,
+				},
+				{
+					Number:      2,
+					Content:     "ORG_WRITE_TOKEN=**********************************************************************************",
+					Highlighted: "ORG_WRITE_TOKEN=**********************************************************************************",
+					IsCause:     true,
+					FirstCause:  true,
+					LastCause:   true,
+				},
+				{
+					Number:      3,
+					Content:     "USER_TOKEN=**********************************************************************************",
+					Highlighted: "USER_TOKEN=**********************************************************************************",
+					IsCause:     false,
+					FirstCause:  false,
+					LastCause:   false,
+				},
+			},
+		},
+	}
+	wantFindingPrivatePackagistUserToken := types.SecretFinding{
+		RuleID:    "private-packagist-token",
+		Category:  secret.CategoryPrivatePackagist,
+		Title:     "Private Packagist token",
+		Severity:  "HIGH",
+		StartLine: 3,
+		EndLine:   3,
+		Match:     "USER_TOKEN=**********************************************************************************",
+		Code: types.Code{
+			Lines: []types.Line{
+				{
+					Number:      1,
+					Content:     "ORG_READ_TOKEN=**********************************************************************************",
+					Highlighted: "ORG_READ_TOKEN=**********************************************************************************",
+					IsCause:     false,
+					FirstCause:  false,
+					LastCause:   false,
+				},
+				{
+					Number:      2,
+					Content:     "ORG_WRITE_TOKEN=**********************************************************************************",
+					Highlighted: "ORG_WRITE_TOKEN=**********************************************************************************",
+					IsCause:     false,
+					FirstCause:  false,
+					LastCause:   false,
+				},
+				{
+					Number:      3,
+					Content:     "USER_TOKEN=**********************************************************************************",
+					Highlighted: "USER_TOKEN=**********************************************************************************",
+					IsCause:     true,
+					FirstCause:  true,
+					LastCause:   true,
+				},
+				{
+					Number:      4,
+					Content:     "",
+					Highlighted: "",
+					IsCause:     false,
+					FirstCause:  false,
+					LastCause:   false,
+				},
+			},
+		},
+	}
 	wantFindingHuggingFace := types.SecretFinding{
 		RuleID:    "hugging-face-access-token",
 		Category:  secret.CategoryHuggingFace,
@@ -622,6 +833,71 @@ func TestSecretScanner(t *testing.T) {
 					IsCause:     true,
 					FirstCause:  true,
 					LastCause:   true,
+				},
+			},
+		},
+	}
+
+	wantFindingGrafanaQuoted := types.SecretFinding{
+		RuleID:    "grafana-api-token",
+		Category:  secret.CategoryGrafana,
+		Title:     "Grafana API token",
+		Severity:  "MEDIUM",
+		StartLine: 1,
+		EndLine:   1,
+		Match:     "GRAFANA_TOKEN=**********************************************************************************************",
+		Code: types.Code{
+			Lines: []types.Line{
+				{
+					Number:      1,
+					Content:     "GRAFANA_TOKEN=**********************************************************************************************",
+					Highlighted: "GRAFANA_TOKEN=**********************************************************************************************",
+					IsCause:     true,
+					FirstCause:  true,
+					LastCause:   true,
+				},
+				{
+					Number:      2,
+					Content:     "GRAFANA_TOKEN=**************************************************************************************",
+					Highlighted: "GRAFANA_TOKEN=**************************************************************************************",
+					IsCause:     false,
+					FirstCause:  false,
+					LastCause:   false,
+				},
+			},
+		},
+	}
+
+	wantFindingGrafanaUnquoted := types.SecretFinding{
+		RuleID:    "grafana-api-token",
+		Category:  secret.CategoryGrafana,
+		Title:     "Grafana API token",
+		Severity:  "MEDIUM",
+		StartLine: 2,
+		EndLine:   2,
+		Match:     "GRAFANA_TOKEN=********************************************************************************************",
+		Code: types.Code{
+			Lines: []types.Line{
+				{
+					Number:      1,
+					Content:     "GRAFANA_TOKEN=**************************************************************************************",
+					Highlighted: "GRAFANA_TOKEN=**************************************************************************************",
+					IsCause:     false,
+					FirstCause:  false,
+					LastCause:   false,
+				},
+				{
+					Number:      2,
+					Content:     "GRAFANA_TOKEN=********************************************************************************************",
+					Highlighted: "GRAFANA_TOKEN=********************************************************************************************",
+					IsCause:     true,
+					FirstCause:  true,
+					LastCause:   true,
+				},
+				{
+					Number:      3,
+					Content:     "",
+					Highlighted: "",
 				},
 			},
 		},
@@ -654,6 +930,63 @@ func TestSecretScanner(t *testing.T) {
 					Number:      3,
 					Content:     "123",
 					Highlighted: "123",
+				},
+			},
+		},
+	}
+	wantFindingTokenInsideJs := types.SecretFinding{
+		RuleID:    "stripe-publishable-token",
+		Category:  "Stripe",
+		Title:     "Stripe Publishable Key",
+		Severity:  "LOW",
+		StartLine: 1,
+		EndLine:   1,
+		Match:     "){case a.ez.PRODUCTION:return\"********************************\";case a.ez.TEST:cas",
+		Code: types.Code{
+			Lines: []types.Line{
+				{
+					Number:      1,
+					Content:     "){case a.ez.PRODUCTION:return\"********************************\";case a.ez.TEST:cas",
+					Highlighted: "){case a.ez.PRODUCTION:return\"********************************\";case a.ez.TEST:cas",
+					IsCause:     true,
+					FirstCause:  true,
+					LastCause:   true,
+				},
+			},
+		},
+	}
+	wantFindingJWT := types.SecretFinding{
+		RuleID:    "jwt-token",
+		Category:  "JWT",
+		Title:     "JWT token",
+		Severity:  "MEDIUM",
+		StartLine: 3,
+		EndLine:   3,
+		Match:     "jwt: ***********************************************************************************************************************************************************",
+		Code: types.Code{
+			Lines: []types.Line{
+				{
+					Number:      1,
+					Content:     "asd",
+					Highlighted: "asd",
+				},
+				{
+					Number:      2,
+					Content:     "aaaa",
+					Highlighted: "aaaa",
+				},
+				{
+					Number:      3,
+					Content:     "jwt: ***********************************************************************************************************************************************************",
+					Highlighted: "jwt: ***********************************************************************************************************************************************************",
+					IsCause:     true,
+					FirstCause:  true,
+					LastCause:   true,
+				},
+				{
+					Number:      4,
+					Content:     "asda",
+					Highlighted: "asda",
 				},
 			},
 		},
@@ -736,6 +1069,37 @@ func TestSecretScanner(t *testing.T) {
 			want: types.Secret{
 				FilePath: filepath.Join("testdata", "hugging-face-secret.txt"),
 				Findings: []types.SecretFinding{wantFindingHuggingFace},
+			},
+		},
+		{
+			name:          "find grafana secret",
+			configPath:    filepath.Join("testdata", "config.yaml"),
+			inputFilePath: filepath.Join("testdata", "grafana-env.txt"),
+			want: types.Secret{
+				FilePath: filepath.Join("testdata", "grafana-env.txt"),
+				Findings: []types.SecretFinding{wantFindingGrafanaUnquoted, wantFindingGrafanaQuoted},
+			},
+		},
+		{
+			name:          "find JWT token",
+			configPath:    filepath.Join("testdata", "config.yaml"),
+			inputFilePath: filepath.Join("testdata", "jwt-secret.txt"),
+			want: types.Secret{
+				FilePath: filepath.Join("testdata", "jwt-secret.txt"),
+				Findings: []types.SecretFinding{wantFindingJWT},
+			},
+		},
+		{
+			name:          "find Private Packagist tokens",
+			configPath:    filepath.Join("testdata", "config.yaml"),
+			inputFilePath: filepath.Join("testdata", "private-packagist.txt"),
+			want: types.Secret{
+				FilePath: filepath.Join("testdata", "private-packagist.txt"),
+				Findings: []types.SecretFinding{
+					wantFindingPrivatePackagistOrgReadToken,
+					wantFindingPrivatePackagistOrgUpdateToken,
+					wantFindingPrivatePackagistUserToken,
+				},
 			},
 		},
 		{
@@ -950,12 +1314,30 @@ func TestSecretScanner(t *testing.T) {
 			want:          types.Secret{},
 		},
 		{
+			name:          "secret inside another word",
+			configPath:    filepath.Join("testdata", "skip-test.yaml"),
+			inputFilePath: filepath.Join("testdata", "wrapped-secrets.txt"),
+			want:          types.Secret{},
+		},
+		{
+			name:          "sensitive secret inside another word",
+			configPath:    filepath.Join("testdata", "skip-test.yaml"),
+			inputFilePath: filepath.Join("testdata", "wrapped-secrets-sensitive.txt"),
+			want: types.Secret{
+				FilePath: filepath.Join("testdata", "wrapped-secrets-sensitive.txt"),
+				Findings: []types.SecretFinding{
+					wantFindingMyAwsAccessKey,
+					wantFindingMyGitHubPAT,
+				},
+			},
+		},
+		{
 			name:          "asymmetric file",
 			configPath:    filepath.Join("testdata", "skip-test.yaml"),
 			inputFilePath: "testdata/asymmetric-private-key.txt",
 			want: types.Secret{
 				FilePath: "testdata/asymmetric-private-key.txt",
-				Findings: []types.SecretFinding{wantFindingAsymmSecretKey},
+				Findings: []types.SecretFinding{wantFindingMinimumAsymmSecretKey, wantFindingAsymmSecretKey},
 			},
 		},
 		{
@@ -971,6 +1353,15 @@ func TestSecretScanner(t *testing.T) {
 			want: types.Secret{
 				FilePath: "testdata/multi-line.txt",
 				Findings: []types.SecretFinding{wantMultiLine},
+			},
+		},
+		{
+			name:          "long obfuscated js code with secrets",
+			configPath:    filepath.Join("testdata", "skip-test.yaml"),
+			inputFilePath: filepath.Join("testdata", "obfuscated.js"),
+			want: types.Secret{
+				FilePath: filepath.Join("testdata", "obfuscated.js"),
+				Findings: []types.SecretFinding{wantFindingTokenInsideJs},
 			},
 		},
 	}

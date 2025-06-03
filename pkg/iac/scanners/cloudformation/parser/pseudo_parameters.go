@@ -6,8 +6,8 @@ import (
 
 type pseudoParameter struct {
 	t   cftypes.CfType
-	val interface{}
-	raw interface{}
+	val any
+	raw any
 }
 
 var pseudoParameters = map[string]pseudoParameter{
@@ -16,16 +16,12 @@ var pseudoParameters = map[string]pseudoParameter{
 		t: cftypes.List,
 		val: []*Property{
 			{
-				Inner: PropertyInner{
-					Type:  cftypes.String,
-					Value: "notification::arn::1",
-				},
+				Type:  cftypes.String,
+				Value: "notification::arn::1",
 			},
 			{
-				Inner: PropertyInner{
-					Type:  cftypes.String,
-					Value: "notification::arn::2",
-				},
+				Type:  cftypes.String,
+				Value: "notification::arn::2",
 			},
 		},
 		raw: []string{"notification::arn::1", "notification::arn::2"},
@@ -38,7 +34,7 @@ var pseudoParameters = map[string]pseudoParameter{
 	"AWS::URLSuffix": {t: cftypes.String, val: "amazonaws.com"},
 }
 
-func (p pseudoParameter) getRawValue() interface{} {
+func (p pseudoParameter) getRawValue() any {
 	switch p.t {
 	case cftypes.List:
 		return p.raw

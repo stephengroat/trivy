@@ -3,41 +3,26 @@
 package repo
 
 import (
-	"context"
-	"github.com/aquasecurity/trivy/pkg/fanal/walker"
-	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 
-	"github.com/sosedoff/gitkit"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/aquasecurity/trivy/internal/gittest"
+	"github.com/aquasecurity/trivy/pkg/cache"
 	"github.com/aquasecurity/trivy/pkg/fanal/artifact"
-	"github.com/aquasecurity/trivy/pkg/fanal/cache"
 	"github.com/aquasecurity/trivy/pkg/fanal/types"
+	"github.com/aquasecurity/trivy/pkg/fanal/walker"
+	"github.com/aquasecurity/trivy/pkg/uuid"
 
 	_ "github.com/aquasecurity/trivy/pkg/fanal/analyzer/config/all"
 	_ "github.com/aquasecurity/trivy/pkg/fanal/analyzer/secret"
 )
 
-func setupGitServer() (*httptest.Server, error) {
-	service := gitkit.New(gitkit.Config{
-		Dir:        "./testdata",
-		AutoCreate: false,
-	})
-
-	if err := service.Setup(); err != nil {
-		return nil, err
-	}
-
-	ts := httptest.NewServer(service)
-
-	return ts, nil
-}
-
 func TestNewArtifact(t *testing.T) {
-	ts, err := setupGitServer()
-	require.NoError(t, err)
+	ts := gittest.NewTestServer(t)
 	defer ts.Close()
 
 	type args struct {
@@ -56,7 +41,7 @@ func TestNewArtifact(t *testing.T) {
 		{
 			name: "remote repo",
 			args: args{
-				target:     ts.URL + "/test.git",
+				target:     ts.URL + "/test-repo.git",
 				c:          nil,
 				noProgress: false,
 			},
@@ -65,16 +50,16 @@ func TestNewArtifact(t *testing.T) {
 		{
 			name: "local repo",
 			args: args{
-				target:     "testdata",
+				target:     "../../../../internal/gittest/testdata/test-repo",
 				c:          nil,
 				noProgress: false,
 			},
 			assertion: assert.NoError,
 		},
 		{
-			name: "happy noProgress",
+			name: "no progress",
 			args: args{
-				target:     ts.URL + "/test.git",
+				target:     ts.URL + "/test-repo.git",
 				c:          nil,
 				noProgress: true,
 			},
@@ -83,7 +68,7 @@ func TestNewArtifact(t *testing.T) {
 		{
 			name: "branch",
 			args: args{
-				target:     ts.URL + "/test.git",
+				target:     ts.URL + "/test-repo.git",
 				c:          nil,
 				repoBranch: "valid-branch",
 			},
@@ -92,18 +77,18 @@ func TestNewArtifact(t *testing.T) {
 		{
 			name: "tag",
 			args: args{
-				target:  ts.URL + "/test.git",
+				target:  ts.URL + "/test-repo.git",
 				c:       nil,
-				repoTag: "v1.0.0",
+				repoTag: "v0.0.1",
 			},
 			assertion: assert.NoError,
 		},
 		{
 			name: "commit",
 			args: args{
-				target:     ts.URL + "/test.git",
+				target:     ts.URL + "/test-repo.git",
 				c:          nil,
-				repoCommit: "6ac152fe2b87cb5e243414df71790a32912e778d",
+				repoCommit: "8a19b492a589955c3e70c6ad8efd1e4ec6ae0d35",
 			},
 			assertion: assert.NoError,
 		},
@@ -114,7 +99,7 @@ func TestNewArtifact(t *testing.T) {
 				c:          nil,
 				noProgress: false,
 			},
-			assertion: func(t assert.TestingT, err error, args ...interface{}) bool {
+			assertion: func(t assert.TestingT, err error, _ ...any) bool {
 				return assert.ErrorContains(t, err, "repository not found")
 			},
 		},
@@ -125,40 +110,40 @@ func TestNewArtifact(t *testing.T) {
 				c:          nil,
 				noProgress: false,
 			},
-			assertion: func(t assert.TestingT, err error, args ...interface{}) bool {
+			assertion: func(t assert.TestingT, err error, _ ...any) bool {
 				return assert.ErrorContains(t, err, "url parse error")
 			},
 		},
 		{
 			name: "invalid branch",
 			args: args{
-				target:     ts.URL + "/test.git",
+				target:     ts.URL + "/test-repo.git",
 				c:          nil,
 				repoBranch: "invalid-branch",
 			},
-			assertion: func(t assert.TestingT, err error, args ...interface{}) bool {
+			assertion: func(t assert.TestingT, err error, _ ...any) bool {
 				return assert.ErrorContains(t, err, `couldn't find remote ref "refs/heads/invalid-branch"`)
 			},
 		},
 		{
 			name: "invalid tag",
 			args: args{
-				target:  ts.URL + "/test.git",
+				target:  ts.URL + "/test-repo.git",
 				c:       nil,
 				repoTag: "v1.0.9",
 			},
-			assertion: func(t assert.TestingT, err error, args ...interface{}) bool {
+			assertion: func(t assert.TestingT, err error, _ ...any) bool {
 				return assert.ErrorContains(t, err, `couldn't find remote ref "refs/tags/v1.0.9"`)
 			},
 		},
 		{
 			name: "invalid commit",
 			args: args{
-				target:     ts.URL + "/test.git",
+				target:     ts.URL + "/test-repo.git",
 				c:          nil,
 				repoCommit: "6ac152fe2b87cb5e243414df71790a32912e778e",
 			},
-			assertion: func(t assert.TestingT, err error, args ...interface{}) bool {
+			assertion: func(t assert.TestingT, err error, _ ...any) bool {
 				return assert.ErrorContains(t, err, "git checkout error: object not found")
 			},
 		},
@@ -179,25 +164,97 @@ func TestNewArtifact(t *testing.T) {
 }
 
 func TestArtifact_Inspect(t *testing.T) {
-	ts, err := setupGitServer()
-	require.NoError(t, err)
+	ts := gittest.NewTestServer(t)
 	defer ts.Close()
 
 	tests := []struct {
-		name    string
-		rawurl  string
-		want    types.ArtifactReference
-		wantErr bool
+		name         string
+		rawurl       string
+		setup        func(t *testing.T, dir string, c cache.ArtifactCache)
+		want         artifact.Reference
+		wantBlobInfo *types.BlobInfo
+		wantErr      bool
 	}{
 		{
-			name:   "happy path",
-			rawurl: ts.URL + "/test.git",
-			want: types.ArtifactReference{
-				Name: ts.URL + "/test.git",
-				Type: types.ArtifactRepository,
-				ID:   "sha256:6a89d4fcd50f840a79da64523c255da80171acd3d286df2acc60056c778d9304",
+			name:   "remote repo",
+			rawurl: ts.URL + "/test-repo.git",
+			want: artifact.Reference{
+				Name: ts.URL + "/test-repo.git",
+				Type: types.TypeRepository,
+				ID:   "sha256:dc7c6039424c9fce969d3c2972d261af442a33f13e7494464386dbe280612d4c", // Calculated from commit hash
 				BlobIDs: []string{
-					"sha256:6a89d4fcd50f840a79da64523c255da80171acd3d286df2acc60056c778d9304",
+					"sha256:dc7c6039424c9fce969d3c2972d261af442a33f13e7494464386dbe280612d4c", // Calculated from commit hash
+				},
+			},
+			wantBlobInfo: &types.BlobInfo{
+				SchemaVersion: types.BlobJSONSchemaVersion,
+			},
+		},
+		{
+			name:   "local repo",
+			rawurl: "../../../../internal/gittest/testdata/test-repo",
+			want: artifact.Reference{
+				Name: "../../../../internal/gittest/testdata/test-repo",
+				Type: types.TypeRepository,
+				ID:   "sha256:dc7c6039424c9fce969d3c2972d261af442a33f13e7494464386dbe280612d4c", // Calculated from commit hash
+				BlobIDs: []string{
+					"sha256:dc7c6039424c9fce969d3c2972d261af442a33f13e7494464386dbe280612d4c", // Calculated from commit hash
+				},
+			},
+			wantBlobInfo: &types.BlobInfo{
+				SchemaVersion: types.BlobJSONSchemaVersion,
+			},
+		},
+		{
+			name:   "dirty repository",
+			rawurl: "../../../../internal/gittest/testdata/test-repo",
+			setup: func(t *testing.T, dir string, _ cache.ArtifactCache) {
+				require.NoError(t, os.WriteFile(filepath.Join(dir, "new-file.txt"), []byte("test"), 0o644))
+				t.Cleanup(func() {
+					require.NoError(t, os.Remove(filepath.Join(dir, "new-file.txt")))
+				})
+			},
+			want: artifact.Reference{
+				Name: "../../../../internal/gittest/testdata/test-repo",
+				Type: types.TypeRepository,
+				ID:   "sha256:6f4672e139d4066fd00391df614cdf42bda5f7a3f005d39e1d8600be86157098",
+				BlobIDs: []string{
+					"sha256:6f4672e139d4066fd00391df614cdf42bda5f7a3f005d39e1d8600be86157098",
+				},
+			},
+			wantBlobInfo: &types.BlobInfo{
+				SchemaVersion: types.BlobJSONSchemaVersion,
+			},
+		},
+		{
+			name:   "cache hit",
+			rawurl: "../../../../internal/gittest/testdata/test-repo",
+			setup: func(t *testing.T, _ string, c cache.ArtifactCache) {
+				blobInfo := types.BlobInfo{
+					SchemaVersion: types.BlobJSONSchemaVersion,
+					OS: types.OS{
+						Family: types.Alpine,
+						Name:   "3.16.0",
+					},
+				}
+				// Store the blob info in the cache to test cache hit
+				cacheKey := "sha256:dc7c6039424c9fce969d3c2972d261af442a33f13e7494464386dbe280612d4c"
+				err := c.PutBlob(cacheKey, blobInfo)
+				require.NoError(t, err)
+			},
+			want: artifact.Reference{
+				Name: "../../../../internal/gittest/testdata/test-repo",
+				Type: types.TypeRepository,
+				ID:   "sha256:dc7c6039424c9fce969d3c2972d261af442a33f13e7494464386dbe280612d4c",
+				BlobIDs: []string{
+					"sha256:dc7c6039424c9fce969d3c2972d261af442a33f13e7494464386dbe280612d4c",
+				},
+			},
+			wantBlobInfo: &types.BlobInfo{
+				SchemaVersion: types.BlobJSONSchemaVersion,
+				OS: types.OS{
+					Family: types.Alpine,
+					Name:   "3.16.0",
 				},
 			},
 		},
@@ -205,16 +262,34 @@ func TestArtifact_Inspect(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			fsCache, err := cache.NewFSCache(t.TempDir())
-			require.NoError(t, err)
+			// Set fake UUID for consistency
+			uuid.SetFakeUUID(t, "3ff14136-e09f-4df9-80ea-%012d")
 
-			art, cleanup, err := NewArtifact(tt.rawurl, fsCache, walker.NewFS(), artifact.Option{})
+			// Create memory cache
+			c := cache.NewMemoryCache()
+
+			// Apply setup if specified
+			if tt.setup != nil {
+				tt.setup(t, tt.rawurl, c)
+			}
+
+			art, cleanup, err := NewArtifact(tt.rawurl, c, walker.NewFS(), artifact.Option{})
 			require.NoError(t, err)
 			defer cleanup()
 
-			ref, err := art.Inspect(context.Background())
-			assert.NoError(t, err)
+			ref, err := art.Inspect(t.Context())
+			if tt.wantErr {
+				assert.Error(t, err)
+				return
+			}
+
+			require.NoError(t, err)
 			assert.Equal(t, tt.want, ref)
+
+			// Verify cache contents after inspection
+			blobInfo, err := c.GetBlob(tt.want.BlobIDs[0])
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantBlobInfo, &blobInfo, "cache content mismatch")
 		})
 	}
 }
@@ -255,13 +330,10 @@ func Test_newURL(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			got, err := newURL(tt.args.rawurl)
 			if tt.wantErr != "" {
-				require.NotNil(t, err)
-				assert.Contains(t, err.Error(), tt.wantErr)
+				require.ErrorContains(t, err, tt.wantErr)
 				return
-			} else {
-				require.NoError(t, err)
 			}
-
+			require.NoError(t, err)
 			assert.Equal(t, tt.want, got.String())
 		})
 	}

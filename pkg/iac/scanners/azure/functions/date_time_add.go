@@ -1,6 +1,7 @@
 package functions
 
 import (
+	"errors"
 	"fmt"
 	"regexp"
 	"strconv"
@@ -9,7 +10,7 @@ import (
 
 var pattern = regexp.MustCompile(`^P((?P<year>\d+)Y)?((?P<month>\d+)M)?((?P<week>\d+)W)?((?P<day>\d+)D)?(T((?P<hour>\d+)H)?((?P<minute>\d+)M)?((?P<second>\d+)S)?)?$`)
 
-func DateTimeAdd(args ...interface{}) interface{} {
+func DateTimeAdd(args ...any) any {
 	if len(args) < 2 {
 		return nil
 	}
@@ -62,11 +63,10 @@ func parseISO8601(from string) (Iso8601Duration, error) {
 	var match []string
 	var d Iso8601Duration
 
-	if pattern.MatchString(from) {
-		match = pattern.FindStringSubmatch(from)
-	} else {
-		return d, fmt.Errorf("could not parse duration string")
+	if !pattern.MatchString(from) {
+		return d, errors.New("could not parse duration string")
 	}
+	match = pattern.FindStringSubmatch(from)
 
 	for i, name := range pattern.SubexpNames() {
 		part := match[i]

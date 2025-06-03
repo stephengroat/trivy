@@ -6,10 +6,10 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
-	"golang.org/x/exp/slices"
 	"golang.org/x/xerrors"
 
 	xsync "github.com/aquasecurity/trivy/pkg/x/sync"
@@ -110,6 +110,42 @@ func (m *FS) FilterFunc(fn func(path string, d fs.DirEntry) (bool, error)) (*FS,
 	return newFS, nil
 }
 
+// CopyDir copies a directory from the local filesystem into the in-memory filesystem.
+// This function works similarly to the Unix command "cp -r src dst", recursively copying
+// the entire directory structure from the source to the destination.
+//
+// The function:
+// 1. Walks through all files and subdirectories in the source directory
+// 2. Recreates the directory structure in the in-memory filesystem
+// 3. Copies all files while preserving their relative paths
+//
+// Parameters:
+//   - src: The source directory path in the local filesystem
+//   - dst: The destination directory path in the in-memory filesystem
+//
+// For example, if src is "/tmp/data" and dst is "app/", then:
+// - A file at "/tmp/data/settings.json" will be copied to "app/data/settings.json"
+// - A file at "/tmp/data/subdir/config.yaml" will be copied to "app/data/subdir/config.yaml"
+func (m *FS) CopyDir(src, dst string) error {
+	base := filepath.Base(src)
+	return filepath.WalkDir(src, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+
+		rel, err := filepath.Rel(src, path)
+		if err != nil {
+			return err
+		}
+		dstPath := filepath.Join(dst, base, rel)
+		if d.IsDir() {
+			return m.MkdirAll(dstPath, d.Type())
+		}
+		return m.WriteFile(dstPath, path)
+	})
+}
+
+// TODO(knqyf263): Remove this method and replace with CopyDir
 func (m *FS) CopyFilesUnder(dir string) error {
 	return filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -123,7 +159,7 @@ func (m *FS) CopyFilesUnder(dir string) error {
 
 // Stat returns a FileInfo describing the file.
 func (m *FS) Stat(name string) (fs.FileInfo, error) {
-	if strings.HasPrefix(name, "../") && m.underlyingRoot != "" {
+	if m.isPathAboveRoot(name) {
 		return os.Stat(filepath.Join(m.underlyingRoot, name))
 	}
 
@@ -145,7 +181,7 @@ func (m *FS) Stat(name string) (fs.FileInfo, error) {
 // ReadDir reads the named directory
 // and returns a list of directory entries sorted by filename.
 func (m *FS) ReadDir(name string) ([]fs.DirEntry, error) {
-	if strings.HasPrefix(name, "../") && m.underlyingRoot != "" {
+	if m.isPathAboveRoot(name) {
 		return os.ReadDir(filepath.Join(m.underlyingRoot, name))
 	}
 	return m.root.ReadDir(cleanPath(name))
@@ -153,7 +189,7 @@ func (m *FS) ReadDir(name string) ([]fs.DirEntry, error) {
 
 // Open opens the named file for reading.
 func (m *FS) Open(name string) (fs.File, error) {
-	if strings.HasPrefix(name, "../") && m.underlyingRoot != "" {
+	if m.isPathAboveRoot(name) {
 		return os.Open(filepath.Join(m.underlyingRoot, name))
 	}
 	return m.root.Open(cleanPath(name))
@@ -188,7 +224,7 @@ func (m *FS) MkdirAll(path string, perm fs.FileMode) error {
 // The caller is permitted to modify the returned byte slice.
 // This method should return a copy of the underlying data.
 func (m *FS) ReadFile(name string) ([]byte, error) {
-	if strings.HasPrefix(name, "../") && m.underlyingRoot != "" {
+	if m.isPathAboveRoot(name) {
 		return os.ReadFile(filepath.Join(m.underlyingRoot, name))
 	}
 
@@ -244,4 +280,8 @@ func cleanPath(path string) string {
 	path = filepath.ToSlash(path)
 	path = strings.TrimLeft(path, "/") // Remove the leading slash
 	return path
+}
+
+func (m *FS) isPathAboveRoot(name string) bool {
+	return (name == ".." || strings.HasPrefix(name, "../")) && m.underlyingRoot != ""
 }

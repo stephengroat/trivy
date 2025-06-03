@@ -1,7 +1,6 @@
 package gradle
 
 import (
-	"context"
 	"os"
 	"testing"
 
@@ -28,7 +27,7 @@ func Test_gradleLockAnalyzer_Analyze(t *testing.T) {
 					{
 						Type:     types.Gradle,
 						FilePath: "gradle.lockfile",
-						Libraries: types.Packages{
+						Packages: types.Packages{
 							{
 								ID:           "junit:junit:4.13",
 								Name:         "junit:junit",
@@ -72,7 +71,7 @@ func Test_gradleLockAnalyzer_Analyze(t *testing.T) {
 					{
 						Type:     types.Gradle,
 						FilePath: "gradle.lockfile",
-						Libraries: types.Packages{
+						Packages: types.Packages{
 							{
 								ID:           "junit:junit:4.13",
 								Name:         "junit:junit",
@@ -118,11 +117,11 @@ func Test_gradleLockAnalyzer_Analyze(t *testing.T) {
 			a, err := newGradleLockAnalyzer(analyzer.AnalyzerOptions{})
 			require.NoError(t, err)
 
-			got, err := a.PostAnalyze(context.Background(), analyzer.PostAnalysisInput{
+			got, err := a.PostAnalyze(t.Context(), analyzer.PostAnalysisInput{
 				FS: os.DirFS(tt.dir),
 			})
 
-			assert.NoError(t, err)
+			require.NoError(t, err)
 			assert.Equal(t, tt.want, got)
 		})
 	}

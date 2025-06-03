@@ -4,10 +4,11 @@ package integration
 
 import (
 	"fmt"
-	"github.com/stretchr/testify/assert"
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 
 	ftypes "github.com/aquasecurity/trivy/pkg/fanal/types"
 	"github.com/aquasecurity/trivy/pkg/types"
@@ -15,23 +16,26 @@ import (
 
 // TestRepository tests `trivy repo` with the local code repositories
 func TestRepository(t *testing.T) {
+	t.Setenv("NUGET_PACKAGES", t.TempDir())
 	type args struct {
-		scanner        types.Scanner
-		ignoreIDs      []string
-		policyPaths    []string
-		namespaces     []string
-		listAllPkgs    bool
-		input          string
-		secretConfig   string
-		filePatterns   []string
-		helmSet        []string
-		helmValuesFile []string
-		skipFiles      []string
-		skipDirs       []string
-		command        string
-		format         types.Format
-		includeDevDeps bool
-		parallel       int
+		scanner             types.Scanner
+		ignoreIDs           []string
+		policyPaths         []string
+		namespaces          []string
+		listAllPkgs         bool
+		input               string
+		secretConfig        string
+		filePatterns        []string
+		helmSet             []string
+		helmValuesFile      []string
+		skipFiles           []string
+		skipDirs            []string
+		command             string
+		format              types.Format
+		includeDevDeps      bool
+		parallel            int
+		vex                 string
+		vulnSeveritySources []string
 	}
 	tests := []struct {
 		name     string
@@ -75,6 +79,24 @@ func TestRepository(t *testing.T) {
 			golden: "testdata/gomod.json.golden",
 		},
 		{
+			name: "gomod with local VEX file",
+			args: args{
+				scanner: types.VulnerabilityScanner,
+				input:   "testdata/fixtures/repo/gomod",
+				vex:     "testdata/fixtures/vex/file/openvex.json",
+			},
+			golden: "testdata/gomod-vex.json.golden",
+		},
+		{
+			name: "gomod with VEX repository",
+			args: args{
+				scanner: types.VulnerabilityScanner,
+				input:   "testdata/fixtures/repo/gomod",
+				vex:     "repo",
+			},
+			golden: "testdata/gomod-vex.json.golden",
+		},
+		{
 			name: "npm",
 			args: args{
 				scanner:     types.VulnerabilityScanner,
@@ -82,6 +104,18 @@ func TestRepository(t *testing.T) {
 				listAllPkgs: true,
 			},
 			golden: "testdata/npm.json.golden",
+		},
+		{
+			name: "npm with severity from ubuntu",
+			args: args{
+				scanner: types.VulnerabilityScanner,
+				input:   "testdata/fixtures/repo/npm",
+				vulnSeveritySources: []string{
+					"alpine",
+					"ubuntu",
+				},
+			},
+			golden: "testdata/npm-ubuntu-severity.json.golden",
 		},
 		{
 			name: "npm with dev deps",
@@ -105,10 +139,20 @@ func TestRepository(t *testing.T) {
 		{
 			name: "pnpm",
 			args: args{
-				scanner: types.VulnerabilityScanner,
-				input:   "testdata/fixtures/repo/pnpm",
+				scanner:     types.VulnerabilityScanner,
+				input:       "testdata/fixtures/repo/pnpm",
+				listAllPkgs: true,
 			},
 			golden: "testdata/pnpm.json.golden",
+		},
+		{
+			name: "bun",
+			args: args{
+				scanner:     types.VulnerabilityScanner,
+				input:       "testdata/fixtures/repo/bun",
+				listAllPkgs: true,
+			},
+			golden: "testdata/bun.json.golden",
 		},
 		{
 			name: "pip",
@@ -138,6 +182,15 @@ func TestRepository(t *testing.T) {
 			golden: "testdata/poetry.json.golden",
 		},
 		{
+			name: "uv",
+			args: args{
+				scanner:     types.VulnerabilityScanner,
+				listAllPkgs: true,
+				input:       "testdata/fixtures/repo/uv",
+			},
+			golden: "testdata/uv.json.golden",
+		},
+		{
 			name: "pom",
 			args: args{
 				scanner: types.VulnerabilityScanner,
@@ -152,6 +205,14 @@ func TestRepository(t *testing.T) {
 				input:   "testdata/fixtures/repo/gradle",
 			},
 			golden: "testdata/gradle.json.golden",
+		},
+		{
+			name: "sbt",
+			args: args{
+				scanner: types.VulnerabilityScanner,
+				input:   "testdata/fixtures/repo/sbt",
+			},
+			golden: "testdata/sbt.json.golden",
 		},
 		{
 			name: "conan",
@@ -235,6 +296,33 @@ func TestRepository(t *testing.T) {
 			golden: "testdata/composer.lock.json.golden",
 		},
 		{
+			name: "cargo.lock",
+			args: args{
+				scanner:     types.VulnerabilityScanner,
+				listAllPkgs: true,
+				input:       "testdata/fixtures/repo/cargo",
+			},
+			golden: "testdata/cargo.lock.json.golden",
+		},
+		{
+			name: "multiple lockfiles",
+			args: args{
+				scanner: types.VulnerabilityScanner,
+				input:   "testdata/fixtures/repo/trivy-ci-test",
+			},
+			golden: "testdata/test-repo.json.golden",
+		},
+		{
+			name: "installed.json",
+			args: args{
+				command:     "rootfs",
+				scanner:     types.VulnerabilityScanner,
+				listAllPkgs: true,
+				input:       "testdata/fixtures/repo/composer-vendor",
+			},
+			golden: "testdata/composer.vendor.json.golden",
+		},
+		{
 			name: "dockerfile",
 			args: args{
 				scanner:    types.MisconfigScanner,
@@ -252,24 +340,6 @@ func TestRepository(t *testing.T) {
 				filePatterns: []string{"dockerfile:Customfile"},
 			},
 			golden: "testdata/dockerfile_file_pattern.json.golden",
-		},
-		{
-			name: "dockerfile with rule exception",
-			args: args{
-				scanner:     types.MisconfigScanner,
-				policyPaths: []string{"testdata/fixtures/repo/rule-exception/policy"},
-				input:       "testdata/fixtures/repo/rule-exception",
-			},
-			golden: "testdata/dockerfile-rule-exception.json.golden",
-		},
-		{
-			name: "dockerfile with namespace exception",
-			args: args{
-				scanner:     types.MisconfigScanner,
-				policyPaths: []string{"testdata/fixtures/repo/namespace-exception/policy"},
-				input:       "testdata/fixtures/repo/namespace-exception",
-			},
-			golden: "testdata/dockerfile-namespace-exception.json.golden",
 		},
 		{
 			name: "dockerfile with custom policies",
@@ -379,7 +449,7 @@ func TestRepository(t *testing.T) {
 			},
 			golden: "testdata/gomod-skip.json.golden",
 			override: func(_ *testing.T, want, _ *types.Report) {
-				want.ArtifactType = ftypes.ArtifactFilesystem
+				want.ArtifactType = ftypes.TypeFilesystem
 			},
 		},
 		{
@@ -393,16 +463,31 @@ func TestRepository(t *testing.T) {
 			},
 			golden: "testdata/dockerfile-custom-policies.json.golden",
 			override: func(_ *testing.T, want, got *types.Report) {
-				want.ArtifactType = ftypes.ArtifactFilesystem
+				want.ArtifactType = ftypes.TypeFilesystem
 			},
+		},
+		{
+			name: "julia generating SPDX SBOM",
+			args: args{
+				command: "rootfs",
+				format:  "spdx-json",
+				input:   "testdata/fixtures/repo/julia",
+			},
+			golden: "testdata/julia-spdx.json.golden",
 		},
 	}
 
 	// Set up testing DB
 	cacheDir := initDB(t)
 
-	// Set a temp dir so that modules will not be loaded
+	// Set up VEX
+	initVEXRepository(t, cacheDir, cacheDir)
+
+	// Set a temp dir so that the VEX config will be loaded and modules will not be loaded
 	t.Setenv("XDG_DATA_HOME", cacheDir)
+
+	// Disable Go license detection
+	t.Setenv("GOPATH", cacheDir)
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -450,7 +535,7 @@ func TestRepository(t *testing.T) {
 			if len(tt.args.ignoreIDs) != 0 {
 				trivyIgnore := ".trivyignore"
 				err := os.WriteFile(trivyIgnore, []byte(strings.Join(tt.args.ignoreIDs, "\n")), 0444)
-				assert.NoError(t, err, "failed to write .trivyignore")
+				require.NoError(t, err, "failed to write .trivyignore")
 				defer os.Remove(trivyIgnore)
 			}
 
@@ -484,6 +569,12 @@ func TestRepository(t *testing.T) {
 				}
 			}
 
+			if len(tt.args.vulnSeveritySources) != 0 {
+				osArgs = append(osArgs,
+					"--vuln-severity-source", strings.Join(tt.args.vulnSeveritySources, ","),
+				)
+			}
+
 			if tt.args.listAllPkgs {
 				osArgs = append(osArgs, "--list-all-pkgs")
 			}
@@ -494,6 +585,10 @@ func TestRepository(t *testing.T) {
 
 			if tt.args.secretConfig != "" {
 				osArgs = append(osArgs, "--secret-config", tt.args.secretConfig)
+			}
+
+			if tt.args.vex != "" {
+				osArgs = append(osArgs, "--vex", tt.args.vex)
 			}
 
 			runTest(t, osArgs, tt.golden, "", format, runOptions{

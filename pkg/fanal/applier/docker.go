@@ -1,19 +1,22 @@
 package applier
 
 import (
+	"cmp"
 	"fmt"
 	"strings"
 	"time"
 
 	"github.com/knqyf263/nested"
-	"github.com/mitchellh/hashstructure/v2"
 	"github.com/package-url/packageurl-go"
 	"github.com/samber/lo"
 
+	"github.com/aquasecurity/trivy/pkg/dependency"
 	ftypes "github.com/aquasecurity/trivy/pkg/fanal/types"
 	"github.com/aquasecurity/trivy/pkg/log"
 	"github.com/aquasecurity/trivy/pkg/purl"
+	"github.com/aquasecurity/trivy/pkg/scan/utils"
 	"github.com/aquasecurity/trivy/pkg/types"
+	xslices "github.com/aquasecurity/trivy/pkg/x/slices"
 )
 
 type Config struct {
@@ -30,24 +33,25 @@ type History struct {
 	CreatedBy string `json:"created_by"`
 }
 
-func containsPackage(e ftypes.Package, s []ftypes.Package) bool {
-	for _, a := range s {
+func findPackage(e ftypes.Package, s []ftypes.Package) *ftypes.Package {
+	for i := range s {
+		a := &s[i] // do not range by value to avoid heap allocations
 		if a.Name == e.Name && a.Version == e.Version && a.Release == e.Release {
-			return true
+			return a
 		}
 	}
-	return false
+	return nil
 }
 
-func lookupOriginLayerForPkg(pkg ftypes.Package, layers []ftypes.BlobInfo) (string, string, *ftypes.BuildInfo) {
+func lookupOriginLayerForPkg(pkg ftypes.Package, layers []ftypes.BlobInfo) (string, string, []string, *ftypes.BuildInfo) {
 	for i, layer := range layers {
 		for _, info := range layer.PackageInfos {
-			if containsPackage(pkg, info.Packages) {
-				return layer.Digest, layer.DiffID, lookupBuildInfo(i, layers)
+			if p := findPackage(pkg, info.Packages); p != nil {
+				return layer.Digest, layer.DiffID, p.InstalledFiles, lookupBuildInfo(i, layers)
 			}
 		}
 	}
-	return "", "", nil
+	return "", "", nil, nil
 }
 
 // lookupBuildInfo looks up Red Hat content sets from all layers
@@ -67,7 +71,7 @@ func lookupBuildInfo(index int, layers []ftypes.BlobInfo) *ftypes.BuildInfo {
 
 	// Customer's layers build on top of Red Hat image are also missing content sets
 	//   - it needs to be shared from the last Red Hat's layers which contains content sets
-	for i := index - 1; i >= 1; i-- {
+	for i := index - 1; i >= 0; i-- {
 		if layers[i].BuildInfo != nil {
 			return layers[i].BuildInfo
 		}
@@ -81,7 +85,7 @@ func lookupOriginLayerForLib(filePath string, lib ftypes.Package, layers []ftype
 			if filePath != layerApp.FilePath {
 				continue
 			}
-			if containsPackage(lib, layerApp.Libraries) {
+			if findPackage(lib, layerApp.Packages) != nil {
 				return layer.Digest, layer.DiffID
 			}
 		}
@@ -166,7 +170,7 @@ func ApplyLayers(layers []ftypes.BlobInfo) ftypes.ArtifactDetail {
 	}
 
 	// nolint
-	_ = nestedMap.Walk(func(keys []string, value interface{}) error {
+	_ = nestedMap.Walk(func(keys []string, value any) error {
 		switch v := value.(type) {
 		case ftypes.PackageInfo:
 			mergedLayer.Packages = append(mergedLayer.Packages, v.Packages...)
@@ -210,18 +214,20 @@ func ApplyLayers(layers []ftypes.BlobInfo) ftypes.ArtifactDetail {
 	for i, pkg := range mergedLayer.Packages {
 		// Skip lookup for SBOM
 		if lo.IsEmpty(pkg.Layer) {
-			originLayerDigest, originLayerDiffID, buildInfo := lookupOriginLayerForPkg(pkg, layers)
+			originLayerDigest, originLayerDiffID, installedFiles, buildInfo := lookupOriginLayerForPkg(pkg, layers)
 			mergedLayer.Packages[i].Layer = ftypes.Layer{
 				Digest: originLayerDigest,
 				DiffID: originLayerDiffID,
 			}
 			mergedLayer.Packages[i].BuildInfo = buildInfo
+			// Debian/Ubuntu has the installed files only in the first layer where the package is installed.
+			mergedLayer.Packages[i].InstalledFiles = installedFiles
 		}
 
-		if mergedLayer.OS.Family != "" {
+		if mergedLayer.OS.Family != "" && pkg.Identifier.PURL == nil {
 			mergedLayer.Packages[i].Identifier.PURL = newPURL(mergedLayer.OS.Family, types.Metadata{OS: &mergedLayer.OS}, pkg)
 		}
-		mergedLayer.Packages[i].Identifier.UID = calcPkgUID("", pkg)
+		mergedLayer.Packages[i].Identifier.UID = dependency.UID("", pkg)
 
 		// Only debian packages
 		if licenses, ok := dpkgLicenses[pkg.Name]; ok {
@@ -229,52 +235,51 @@ func ApplyLayers(layers []ftypes.BlobInfo) ftypes.ArtifactDetail {
 		}
 	}
 
+	// De-duplicate same debian packages from different dirs
+	// cf. https://github.com/aquasecurity/trivy/issues/8297
+	mergedLayer.Packages = xslices.ZeroToNil(lo.UniqBy(mergedLayer.Packages, func(pkg ftypes.Package) string {
+		return cmp.Or(pkg.ID, fmt.Sprintf("%s@%s", pkg.Name, utils.FormatVersion(pkg)))
+	}))
+
 	for _, app := range mergedLayer.Applications {
-		for i, lib := range app.Libraries {
+		for i, pkg := range app.Packages {
 			// Skip lookup for SBOM
-			if lo.IsEmpty(lib.Layer) {
-				originLayerDigest, originLayerDiffID := lookupOriginLayerForLib(app.FilePath, lib, layers)
-				app.Libraries[i].Layer = ftypes.Layer{
+			if lo.IsEmpty(pkg.Layer) {
+				originLayerDigest, originLayerDiffID := lookupOriginLayerForLib(app.FilePath, pkg, layers)
+				app.Packages[i].Layer = ftypes.Layer{
 					Digest: originLayerDigest,
 					DiffID: originLayerDiffID,
 				}
 			}
-			if lib.Identifier.PURL == nil {
-				app.Libraries[i].Identifier.PURL = newPURL(app.Type, types.Metadata{}, lib)
+			if pkg.Identifier.PURL == nil {
+				app.Packages[i].Identifier.PURL = newPURL(app.Type, types.Metadata{}, pkg)
 			}
-			app.Libraries[i].Identifier.UID = calcPkgUID(app.FilePath, lib)
+			app.Packages[i].Identifier.UID = dependency.UID(app.FilePath, pkg)
 		}
 	}
 
 	// Aggregate python/ruby/node.js packages and JAR files
 	aggregate(&mergedLayer)
 
+	mergedLayer.Sort()
+
 	return mergedLayer
 }
 
 func newPURL(pkgType ftypes.TargetType, metadata types.Metadata, pkg ftypes.Package) *packageurl.PackageURL {
+	// Possible cases when package doesn't have name/version (e.g. local package.json).
+	// For these cases we don't need to create PURL, because this PURL will be incorrect.
+	// TODO Dmitriy - move to `purl` package
+	if pkg.Name == "" {
+		return nil
+	}
+
 	p, err := purl.New(pkgType, metadata, pkg)
 	if err != nil {
 		log.Error("Failed to create PackageURL", log.Err(err))
 		return nil
 	}
 	return p.Unwrap()
-}
-
-// calcPkgUID calculates the hash of the package for the unique ID
-func calcPkgUID(filePath string, pkg ftypes.Package) string {
-	v := map[string]any{
-		"filePath": filePath, // To differentiate the hash of the same package but different file path
-		"pkg":      pkg,
-	}
-	hash, err := hashstructure.Hash(v, hashstructure.FormatV2, &hashstructure.HashOptions{
-		ZeroNil:         true,
-		IgnoreZeroValue: true,
-	})
-	if err != nil {
-		log.Warn("Failed to calculate the package hash", log.String("pkg", pkg.Name), log.Err(err))
-	}
-	return fmt.Sprintf("%x", hash)
 }
 
 // aggregate merges all packages installed by pip/gem/npm/jar/conda into each application
@@ -292,11 +297,11 @@ func aggregate(detail *ftypes.ArtifactDetail) {
 			apps = append(apps, app)
 			continue
 		}
-		a.Libraries = append(a.Libraries, app.Libraries...)
+		a.Packages = append(a.Packages, app.Packages...)
 	}
 
 	for _, app := range aggregatedApps {
-		if len(app.Libraries) > 0 {
+		if len(app.Packages) > 0 {
 			apps = append(apps, *app)
 		}
 	}

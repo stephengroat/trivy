@@ -25,6 +25,7 @@ func TestSBOM(t *testing.T) {
 		name     string
 		args     args
 		golden   string
+		fakeUUID string
 		override OverrideFunc
 	}{
 		{
@@ -37,7 +38,7 @@ func TestSBOM(t *testing.T) {
 			golden: "testdata/centos-7.json.golden",
 			override: func(t *testing.T, want, got *types.Report) {
 				want.ArtifactName = "testdata/fixtures/sbom/centos-7-cyclonedx.json"
-				want.ArtifactType = ftypes.ArtifactCycloneDX
+				want.ArtifactType = ftypes.TypeCycloneDX
 
 				require.Len(t, got.Results, 1)
 				want.Results[0].Target = "testdata/fixtures/sbom/centos-7-cyclonedx.json (centos 7.6.1810)"
@@ -46,6 +47,10 @@ func TestSBOM(t *testing.T) {
 				want.Results[0].Vulnerabilities[0].PkgIdentifier.BOMRef = "pkg:rpm/centos/bash@4.2.46-31.el7?arch=x86_64&distro=centos-7.6.1810"
 				want.Results[0].Vulnerabilities[1].PkgIdentifier.BOMRef = "pkg:rpm/centos/openssl-libs@1.0.2k-16.el7?arch=x86_64&epoch=1&distro=centos-7.6.1810"
 				want.Results[0].Vulnerabilities[2].PkgIdentifier.BOMRef = "pkg:rpm/centos/openssl-libs@1.0.2k-16.el7?arch=x86_64&epoch=1&distro=centos-7.6.1810"
+
+				// SBOM file doesn't contain info about layers
+				want.Metadata.Size = 0
+				want.Metadata.Layers = nil
 			},
 		},
 		{
@@ -56,6 +61,16 @@ func TestSBOM(t *testing.T) {
 				artifactType: "cyclonedx",
 			},
 			golden: "testdata/fluentd-multiple-lockfiles.json.golden",
+		},
+		{
+			name: "scan SBOM into SBOM",
+			args: args{
+				input:        "testdata/fixtures/sbom/fluentd-multiple-lockfiles-cyclonedx.json",
+				format:       "cyclonedx",
+				artifactType: "cyclonedx",
+			},
+			fakeUUID: "3ff14136-e09f-4df9-80ea-%012d",
+			golden:   "testdata/fluentd-multiple-lockfiles-short.cdx.json.golden",
 		},
 		{
 			name: "minikube KBOM",
@@ -76,7 +91,7 @@ func TestSBOM(t *testing.T) {
 			golden: "testdata/centos-7.json.golden",
 			override: func(t *testing.T, want, got *types.Report) {
 				want.ArtifactName = "testdata/fixtures/sbom/centos-7-cyclonedx.intoto.jsonl"
-				want.ArtifactType = ftypes.ArtifactCycloneDX
+				want.ArtifactType = ftypes.TypeCycloneDX
 
 				require.Len(t, got.Results, 1)
 				want.Results[0].Target = "testdata/fixtures/sbom/centos-7-cyclonedx.intoto.jsonl (centos 7.6.1810)"
@@ -85,6 +100,10 @@ func TestSBOM(t *testing.T) {
 				want.Results[0].Vulnerabilities[0].PkgIdentifier.BOMRef = "pkg:rpm/centos/bash@4.2.46-31.el7?arch=x86_64&distro=centos-7.6.1810"
 				want.Results[0].Vulnerabilities[1].PkgIdentifier.BOMRef = "pkg:rpm/centos/openssl-libs@1.0.2k-16.el7?arch=x86_64&epoch=1&distro=centos-7.6.1810"
 				want.Results[0].Vulnerabilities[2].PkgIdentifier.BOMRef = "pkg:rpm/centos/openssl-libs@1.0.2k-16.el7?arch=x86_64&epoch=1&distro=centos-7.6.1810"
+
+				// SBOM file doesn't contain info about layers
+				want.Metadata.Size = 0
+				want.Metadata.Layers = nil
 			},
 		},
 		{
@@ -97,10 +116,14 @@ func TestSBOM(t *testing.T) {
 			golden: "testdata/centos-7.json.golden",
 			override: func(t *testing.T, want, got *types.Report) {
 				want.ArtifactName = "testdata/fixtures/sbom/centos-7-spdx.txt"
-				want.ArtifactType = ftypes.ArtifactSPDX
+				want.ArtifactType = ftypes.TypeSPDX
 
 				require.Len(t, got.Results, 1)
 				want.Results[0].Target = "testdata/fixtures/sbom/centos-7-spdx.txt (centos 7.6.1810)"
+
+				// SBOM file doesn't contain info about layers
+				want.Metadata.Size = 0
+				want.Metadata.Layers = nil
 			},
 		},
 		{
@@ -113,10 +136,14 @@ func TestSBOM(t *testing.T) {
 			golden: "testdata/centos-7.json.golden",
 			override: func(t *testing.T, want, got *types.Report) {
 				want.ArtifactName = "testdata/fixtures/sbom/centos-7-spdx.json"
-				want.ArtifactType = ftypes.ArtifactSPDX
+				want.ArtifactType = ftypes.TypeSPDX
 
 				require.Len(t, got.Results, 1)
 				want.Results[0].Target = "testdata/fixtures/sbom/centos-7-spdx.json (centos 7.6.1810)"
+
+				// SBOM file doesn't contain info about layers
+				want.Metadata.Size = 0
+				want.Metadata.Layers = nil
 			},
 		},
 		{
@@ -165,6 +192,7 @@ func TestSBOM(t *testing.T) {
 			// Run "trivy sbom"
 			runTest(t, osArgs, tt.golden, outputFile, types.Format(tt.args.format), runOptions{
 				override: overrideFuncs(overrideSBOMReport, overrideUID, tt.override),
+				fakeUUID: tt.fakeUUID,
 			})
 		})
 	}
@@ -174,11 +202,6 @@ func overrideSBOMReport(t *testing.T, want, got *types.Report) {
 	want.Metadata.ImageID = ""
 	want.Metadata.ImageConfig = v1.ConfigFile{}
 	want.Metadata.DiffIDs = nil
-	for i, result := range want.Results {
-		for j := range result.Vulnerabilities {
-			want.Results[i].Vulnerabilities[j].Layer.DiffID = ""
-		}
-	}
 
 	// when running on Windows FS
 	got.ArtifactName = filepath.ToSlash(filepath.Clean(got.ArtifactName))

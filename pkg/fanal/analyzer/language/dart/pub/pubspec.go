@@ -10,13 +10,11 @@ import (
 	"sort"
 
 	"github.com/samber/lo"
-	"golang.org/x/exp/maps"
 	"golang.org/x/xerrors"
 	"gopkg.in/yaml.v3"
 
 	"github.com/aquasecurity/trivy/pkg/dependency"
 	"github.com/aquasecurity/trivy/pkg/dependency/parser/dart/pub"
-	godeptypes "github.com/aquasecurity/trivy/pkg/dependency/types"
 	"github.com/aquasecurity/trivy/pkg/fanal/analyzer"
 	"github.com/aquasecurity/trivy/pkg/fanal/analyzer/language"
 	"github.com/aquasecurity/trivy/pkg/fanal/types"
@@ -36,13 +34,13 @@ const (
 // pubSpecLockAnalyzer analyzes `pubspec.lock`
 type pubSpecLockAnalyzer struct {
 	logger *log.Logger
-	parser godeptypes.Parser
+	parser language.Parser
 }
 
-func newPubSpecLockAnalyzer(_ analyzer.AnalyzerOptions) (analyzer.PostAnalyzer, error) {
+func newPubSpecLockAnalyzer(opts analyzer.AnalyzerOptions) (analyzer.PostAnalyzer, error) {
 	return pubSpecLockAnalyzer{
 		logger: log.WithPrefix("pub"),
-		parser: pub.NewParser(),
+		parser: pub.NewParser(opts.DetectionPriority == types.PriorityComprehensive),
 	}, nil
 }
 
@@ -56,8 +54,9 @@ func (a pubSpecLockAnalyzer) PostAnalyze(_ context.Context, input analyzer.PostA
 		a.logger.Warn("Unable to parse cache dir", log.Err(err))
 	}
 
-	required := func(path string, d fs.DirEntry) bool {
-		return filepath.Base(path) == types.PubSpecLock
+	required := func(_ string, _ fs.DirEntry) bool {
+		// Parse all required files: `pubspec.lock` (from a.Required func) + input.FilePatterns.Match()
+		return true
 	}
 
 	err = fsutils.WalkDir(input.FS, ".", required, func(path string, _ fs.DirEntry, r io.Reader) error {
@@ -72,22 +71,22 @@ func (a pubSpecLockAnalyzer) PostAnalyze(_ context.Context, input analyzer.PostA
 
 		if allDependsOn != nil {
 			// Required to search for library versions for DependsOn.
-			libs := lo.SliceToMap(app.Libraries, func(lib types.Package) (string, string) {
+			pkgs := lo.SliceToMap(app.Packages, func(lib types.Package) (string, string) {
 				return lib.Name, lib.ID
 			})
 
-			for i, lib := range app.Libraries {
+			for i, lib := range app.Packages {
 				var dependsOn []string
 				for _, depName := range allDependsOn[lib.ID] {
-					if depID, ok := libs[depName]; ok {
+					if depID, ok := pkgs[depName]; ok {
 						dependsOn = append(dependsOn, depID)
 					}
 				}
-				app.Libraries[i].DependsOn = dependsOn
+				app.Packages[i].DependsOn = dependsOn
 			}
 		}
 
-		sort.Sort(app.Libraries)
+		sort.Sort(app.Packages)
 		apps = append(apps, *app)
 		return nil
 	})
@@ -108,15 +107,15 @@ func (a pubSpecLockAnalyzer) findDependsOn() (map[string][]string, error) {
 		return nil, nil
 	}
 
-	required := func(path string, d fs.DirEntry) bool {
+	required := func(path string, _ fs.DirEntry) bool {
 		return filepath.Base(path) == pubSpecYamlFileName
 	}
 
 	deps := make(map[string][]string)
-	if err := fsutils.WalkDir(os.DirFS(dir), ".", required, func(path string, d fs.DirEntry, r io.Reader) error {
+	if err := fsutils.WalkDir(os.DirFS(dir), ".", required, func(path string, _ fs.DirEntry, r io.Reader) error {
 		id, dependsOn, err := parsePubSpecYaml(r)
 		if err != nil {
-			a.logger.Debug("Unable to parse pubspec.yaml", log.String("path", path), log.Err(err))
+			a.logger.Debug("Unable to parse pubspec.yaml", log.FilePath(path), log.Err(err))
 			return nil
 		}
 		if id != "" {
@@ -146,9 +145,9 @@ func cacheDir() string {
 }
 
 type pubSpecYaml struct {
-	Name         string                 `yaml:"name"`
-	Version      string                 `yaml:"version,omitempty"`
-	Dependencies map[string]interface{} `yaml:"dependencies,omitempty"`
+	Name         string         `yaml:"name"`
+	Version      string         `yaml:"version,omitempty"`
+	Dependencies map[string]any `yaml:"dependencies,omitempty"`
 }
 
 func parsePubSpecYaml(r io.Reader) (string, []string, error) {
@@ -167,7 +166,7 @@ func parsePubSpecYaml(r io.Reader) (string, []string, error) {
 
 	// pubspec.yaml uses version ranges
 	// save only dependencies names
-	dependsOn := maps.Keys(spec.Dependencies)
+	dependsOn := lo.Keys(spec.Dependencies)
 
 	return dependency.ID(types.Pub, spec.Name, spec.Version), dependsOn, nil
 }

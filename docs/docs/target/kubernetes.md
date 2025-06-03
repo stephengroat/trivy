@@ -38,6 +38,10 @@ for example:
 trivy k8s --report summary
 ```
 
+!!! note "JSON result for multi-container pods"
+    For multi-container pods, it may be challenging to associate results with specific images in the json summary report. Kubernetes treats a pod as a single object, so individual images within the pod aren’t distinguished. 
+    For detailed information, please use the `--report all` option.
+
 By default Trivy will look for a [`kubeconfig` configuration file in the default location](https://kubernetes.io/docs/concepts/configuration/organize-cluster-access-kubeconfig/), and use the default cluster that is specified.  
 You can also specify a `kubeconfig` using the `--kubeconfig` flag:
 
@@ -45,9 +49,40 @@ You can also specify a `kubeconfig` using the `--kubeconfig` flag:
 trivy k8s --kubeconfig ~/.kube/config2
 ```
 
-By default, all cluster resource images will be downloaded and scanned.
+## Required roles
+To successfully scan a Kubernetes cluster, `trivy kubernetes` subcommand must be executed under a role or a cluster role that has some specific permissions.
+
+The role must have `list` verb for all resources (`"*"`) inside the following API groups: core (`""`), `"apps"`, `"batch"`,`"networking.k8s.io"`, `"rbac.authorization.k8s.io"`:
+```yaml
+- apiGroups: [""]
+  resources: ["*"]
+  verbs: ["list"]
+- apiGroups: ["apps", "batch", "networking.k8s.io", "rbac.authorization.k8s.io"]
+  resources: ["*"]
+  verbs: ["list"]
+```
+If `node collector` is enabled (default: enabled), Trivy needs a cluster role with some additional permissions to run and track the jobs:
+```yaml
+- apiGroups: [""]
+  resources: ["nodes/proxy", "pods/log"]
+  verbs: ["get"]
+- apiGroups: [""]
+  resources: ["events"]
+  verbs: ["watch"]
+- apiGroups: ["batch"]
+  resources: ["jobs", "cronjobs"]
+  verbs: ["list", "get"]
+- apiGroups: ["batch"]
+  resources: ["jobs"]
+  verbs: ["create","delete", "watch"]
+- apiGroups: [""]
+  resources: ["namespaces"]
+  verbs: ["create"]
+```
 
 ### Skip-images
+
+By default, all cluster resource images will be downloaded and scanned.
 
 You can control whether Trivy will scan and download the cluster resource images. To disable this feature, add the --skip-images flag.
 
@@ -86,6 +121,9 @@ You can control which namespaces will be discovered using the `--include-namespa
 - `--exclude-namespaces` will exclude the listed namespaces from cluster scanning.
 
 By default, all namespaces will be included in cluster scanning.
+
+!!! note "using `--exclude-namespaces`"
+    Trivy requires a complete list of namespaces to exclude specific ones. Therefore, `--exclude-namespaces` option is only available for cluster roles now.
 
 Example:
 
@@ -142,7 +180,7 @@ trivy k8s --report summary --disable-node-collector
 
 The node-collector scan-job will run on every node. In case the node has been tainted, it is possible to add toleration to the scan job for it to be scheduled on the tainted node. for more details [see k8s docs](https://kubernetes.io/docs/concepts/scheduling-eviction/taint-and-toleration/)
 
-- `--tolerations  key1=value1:NoExecute,key2=value2:NoSchedule` this flag wil enable node-collector to be schedule on tainted Node
+- `--tolerations  key1=value1:NoExecute,key2=value2:NoSchedule` this flag will enable node-collector to be schedule on tainted Node
 
 Example:
 
@@ -280,8 +318,7 @@ trivy k8s --format json -o results.json cluster
           "Type": "kubernetes",
           "MisconfSummary": {
             "Successes": 20,
-            "Failures": 19,
-            "Exceptions": 0
+            "Failures": 19
           },
           "Misconfigurations": [
             {
@@ -355,12 +392,14 @@ For an overview of Trivy's Compliance feature, including working with custom com
 
 The following reports are available out of the box:
 
-| Compliance                                   | Name for command     | More info                                                                                                           |
-|----------------------------------------------|----------------------|---------------------------------------------------------------------------------------------------------------------|
-| NSA, CISA Kubernetes Hardening Guidance v1.2 | `k8s-nsa`            | [Link](https://media.defense.gov/2022/Aug/29/2003066362/-1/-1/0/CTR_KUBERNETES_HARDENING_GUIDANCE_1.2_20220829.PDF) |
-| CIS Benchmark for Kubernetes v1.23           | `k8s-cis`            | [Link](https://www.cisecurity.org/benchmark/kubernetes)                                                             |
-| Pod Security Standards, Baseline             | `k8s-pss-baseline`   | [Link](https://kubernetes.io/docs/concepts/security/pod-security-standards/#baseline)                               |
-| Pod  Security Standards, Restricted          | `k8s-pss-restricted` | [Link](https://kubernetes.io/docs/concepts/security/pod-security-standards/#restricted)                             |
+| Compliance                                   | Name for command         | More info                                                                                                           |
+|----------------------------------------------|--------------------------|---------------------------------------------------------------------------------------------------------------------|
+| NSA, CISA Kubernetes Hardening Guidance v1.0 | `k8s-nsa-1.0`            | [Link](https://media.defense.gov/2022/Aug/29/2003066362/-1/-1/0/CTR_KUBERNETES_HARDENING_GUIDANCE_1.2_20220829.PDF) |
+| CIS Benchmark for Kubernetes v1.23           | `k8s-cis-1.23`           | [Link](https://www.cisecurity.org/benchmark/kubernetes)                                                             |
+| CIS Benchmark for RKE2 v1.24                 | `rke2-cis-1.24`          | [Link](https://www.cisecurity.org/benchmark/kubernetes)                                                             |
+| CIS Benchmark for EKS v1.4                   | `eks-cis-1.4`            | [Link](https://www.cisecurity.org/benchmark/kubernetes)                                                             |
+| Pod Security Standards, Baseline             | `k8s-pss-baseline-0.1`   | [Link](https://kubernetes.io/docs/concepts/security/pod-security-standards/#baseline)                               |
+| Pod  Security Standards, Restricted          | `k8s-pss-restricted-0.1` | [Link](https://kubernetes.io/docs/concepts/security/pod-security-standards/#restricted)                             |
 
 Examples:
 
@@ -376,7 +415,7 @@ Get the detailed report for checks:
 
 ```
 
-trivy k8s --compliance=k8s-cis --report all
+trivy k8s --compliance=k8s-cis-1.23 --report all
 
 ```
 
@@ -384,7 +423,7 @@ Get summary report in JSON format:
 
 ```
 
-trivy k8s --compliance=k8s-cis --report summary --format json
+trivy k8s --compliance=k8s-cis-1.23 --report summary --format json
 
 ```
 
@@ -392,7 +431,7 @@ Get detailed report in JSON format:
 
 ```
 
-trivy k8s --compliance=k8s-cis --report all --format json
+trivy k8s --compliance=k8s-cis-1.23 --report all --format json
 
 ```
 

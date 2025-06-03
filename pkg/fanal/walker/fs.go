@@ -9,6 +9,7 @@ import (
 
 	"golang.org/x/xerrors"
 
+	"github.com/aquasecurity/trivy/pkg/fanal/utils"
 	"github.com/aquasecurity/trivy/pkg/log"
 	xio "github.com/aquasecurity/trivy/pkg/x/io"
 )
@@ -23,8 +24,8 @@ func NewFS() *FS {
 // Walk walks the filesystem rooted at root, calling fn for each unfiltered file.
 func (w *FS) Walk(root string, opt Option, fn WalkFunc) error {
 	opt.SkipFiles = w.BuildSkipPaths(root, opt.SkipFiles)
-	opt.SkipDirs = append(opt.SkipDirs, defaultSkipDirs...)
 	opt.SkipDirs = w.BuildSkipPaths(root, opt.SkipDirs)
+	opt.SkipDirs = append(opt.SkipDirs, defaultSkipDirs...)
 
 	walkDirFunc := w.WalkDirFunc(root, fn, opt)
 	walkDirFunc = w.onError(walkDirFunc)
@@ -50,22 +51,22 @@ func (w *FS) WalkDirFunc(root string, fn WalkFunc, opt Option) fs.WalkDirFunc {
 		}
 		relPath = filepath.ToSlash(relPath)
 
-		info, err := d.Info()
-		if err != nil {
-			return xerrors.Errorf("file info error: %w", err)
-		}
-
 		// Skip unnecessary files
 		switch {
-		case info.IsDir():
-			if SkipPath(relPath, opt.SkipDirs) {
+		case d.IsDir():
+			if utils.SkipPath(relPath, opt.SkipDirs) {
 				return filepath.SkipDir
 			}
 			return nil
-		case !info.Mode().IsRegular():
+		case !d.Type().IsRegular():
 			return nil
-		case SkipPath(relPath, opt.SkipFiles):
+		case utils.SkipPath(relPath, opt.SkipFiles):
 			return nil
+		}
+
+		info, err := d.Info()
+		if err != nil {
+			return xerrors.Errorf("file info error: %w", err)
 		}
 
 		if err = fn(relPath, info, fileOpener(filePath)); err != nil {
@@ -83,7 +84,7 @@ func (w *FS) onError(wrapped fs.WalkDirFunc) fs.WalkDirFunc {
 		// Unwrap fs.SkipDir error
 		case errors.Is(err, fs.SkipDir):
 			return fs.SkipDir
-		// ignore permission errors
+		// Ignore permission errors
 		case os.IsPermission(err):
 			return nil
 		case err != nil:
@@ -148,7 +149,7 @@ func (w *FS) BuildSkipPaths(base string, paths []string) []string {
 		relativePaths = append(relativePaths, relPath)
 	}
 
-	relativePaths = CleanSkipPaths(relativePaths)
+	relativePaths = utils.CleanSkipPaths(relativePaths)
 	return relativePaths
 }
 

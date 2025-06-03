@@ -19,19 +19,18 @@ import (
 func setupPodmanSock(t *testing.T) *httptest.Server {
 	t.Helper()
 
-	runtimeDir, err := os.MkdirTemp("", "daemon")
-	require.NoError(t, err)
+	runtimeDir := t.TempDir()
 
-	os.Setenv("XDG_RUNTIME_DIR", runtimeDir)
+	t.Setenv("XDG_RUNTIME_DIR", runtimeDir)
 
 	dir := filepath.Join(runtimeDir, "podman")
-	err = os.MkdirAll(dir, os.ModePerm)
+	err := os.MkdirAll(dir, os.ModePerm)
 	require.NoError(t, err)
 
 	sockPath := filepath.Join(dir, "podman.sock")
 
 	opt := engine.Option{
-		APIVersion: "1.40",
+		APIVersion: "1.45",
 		ImagePaths: map[string]string{
 			"index.docker.io/library/alpine:3.11": "../../test/testdata/alpine-311.tar.gz",
 		},
@@ -88,10 +87,10 @@ func TestPodmanImage(t *testing.T) {
 			defer cleanup()
 
 			if tt.wantErr {
-				assert.NotNil(t, err)
+				require.Error(t, err)
 				return
 			}
-			assert.NoError(t, err)
+			require.NoError(t, err)
 
 			confName, err := img.ConfigName()
 			require.NoError(t, err)
@@ -100,7 +99,7 @@ func TestPodmanImage(t *testing.T) {
 			confFile, err := img.ConfigFile()
 			require.NoError(t, err)
 
-			assert.Equal(t, len(confFile.History), len(tt.wantCreateBy))
+			assert.Len(t, tt.wantCreateBy, len(confFile.History))
 			for _, h := range confFile.History {
 				assert.Contains(t, tt.wantCreateBy, h.CreatedBy)
 			}

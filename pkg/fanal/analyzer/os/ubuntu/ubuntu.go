@@ -4,9 +4,9 @@ import (
 	"bufio"
 	"context"
 	"os"
+	"slices"
 	"strings"
 
-	"golang.org/x/exp/slices"
 	"golang.org/x/xerrors"
 
 	"github.com/aquasecurity/trivy/pkg/fanal/analyzer"
@@ -61,4 +61,9 @@ func (a ubuntuOSAnalyzer) Type() analyzer.Type {
 
 func (a ubuntuOSAnalyzer) Version() int {
 	return version
+}
+
+// StaticPaths returns the static paths of the ubuntu analyzer
+func (a ubuntuOSAnalyzer) StaticPaths() []string {
+	return requiredFiles
 }

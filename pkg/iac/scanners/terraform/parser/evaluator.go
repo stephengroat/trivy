@@ -4,20 +4,21 @@ import (
 	"context"
 	"errors"
 	"io/fs"
+	"maps"
 	"reflect"
+	"slices"
 
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/ext/typeexpr"
 	"github.com/samber/lo"
 	"github.com/zclconf/go-cty/cty"
 	"github.com/zclconf/go-cty/cty/convert"
-	"golang.org/x/exp/slices"
 
-	"github.com/aquasecurity/trivy/pkg/iac/debug"
 	"github.com/aquasecurity/trivy/pkg/iac/ignore"
 	"github.com/aquasecurity/trivy/pkg/iac/terraform"
 	tfcontext "github.com/aquasecurity/trivy/pkg/iac/terraform/context"
 	"github.com/aquasecurity/trivy/pkg/iac/types"
+	"github.com/aquasecurity/trivy/pkg/log"
 )
 
 const (
@@ -25,6 +26,7 @@ const (
 )
 
 type evaluator struct {
+	logger            *log.Logger
 	filesystem        fs.FS
 	ctx               *tfcontext.Context
 	blocks            terraform.Blocks
@@ -35,7 +37,6 @@ type evaluator struct {
 	moduleName        string
 	ignores           ignore.Rules
 	parentParser      *Parser
-	debug             debug.Logger
 	allowDownloads    bool
 	skipCachedModules bool
 }
@@ -52,7 +53,7 @@ func newEvaluator(
 	moduleMetadata *modulesMetadata,
 	workspace string,
 	ignores ignore.Rules,
-	logger debug.Logger,
+	logger *log.Logger,
 	allowDownloads bool,
 	skipCachedModules bool,
 ) *evaluator {
@@ -84,7 +85,7 @@ func newEvaluator(
 		inputVars:         inputVars,
 		moduleMetadata:    moduleMetadata,
 		ignores:           ignores,
-		debug:             logger,
+		logger:            logger,
 		allowDownloads:    allowDownloads,
 		skipCachedModules: skipCachedModules,
 	}
@@ -96,9 +97,8 @@ func (e *evaluator) evaluateStep() {
 	e.ctx.Set(e.getValuesByBlockType("locals"), "local")
 	e.ctx.Set(e.getValuesByBlockType("provider"), "provider")
 
-	resources := e.getValuesByBlockType("resource")
-	for key, resource := range resources.AsValueMap() {
-		e.ctx.Set(resource, key)
+	for typ, resource := range e.getResources() {
+		e.ctx.Set(resource, typ)
 	}
 
 	e.ctx.Set(e.getValuesByBlockType("data"), "data")
@@ -115,29 +115,53 @@ func (e *evaluator) exportOutputs() cty.Value {
 			continue
 		}
 		data[block.Label()] = attr.Value()
-		e.debug.Log("Added module output %s=%s.", block.Label(), attr.Value().GoString())
+		e.logger.Debug(
+			"Added module output",
+			log.String("block", block.Label()),
+			log.String("value", attr.Value().GoString()),
+		)
 	}
 	return cty.ObjectVal(data)
 }
 
 func (e *evaluator) EvaluateAll(ctx context.Context) (terraform.Modules, map[string]fs.FS) {
 
+	e.logger.Debug("Starting module evaluation...", log.String("path", e.modulePath))
+
 	fsKey := types.CreateFSKey(e.filesystem)
-	e.debug.Log("Filesystem key is '%s'", fsKey)
+	fsMap := map[string]fs.FS{
+		fsKey: e.filesystem,
+	}
 
-	fsMap := make(map[string]fs.FS)
-	fsMap[fsKey] = e.filesystem
-
-	e.debug.Log("Starting module evaluation...")
 	e.evaluateSteps()
 
 	// expand out resources and modules via count, for-each and dynamic
 	// (not a typo, we do this twice so every order is processed)
+	// TODO: using a module in for_each or count does not work,
+	// because the child module is evaluated later
 	e.blocks = e.expandBlocks(e.blocks)
 	e.blocks = e.expandBlocks(e.blocks)
 
-	e.debug.Log("Starting submodule evaluation...")
+	// rootModule is initialized here, but not fully evaluated until all submodules are evaluated.
+	// Initializing it up front to keep the module hierarchy of parents correct.
+	rootModule := terraform.NewModule(e.projectRootPath, e.modulePath, e.blocks, e.ignores)
+	submodules := e.evaluateSubmodules(ctx, rootModule, fsMap)
+
+	e.logger.Debug("Starting post-submodules evaluation...")
+	e.evaluateSteps()
+
+	e.logger.Debug("Module evaluation complete.")
+	return append(terraform.Modules{rootModule}, submodules...), fsMap
+}
+
+func (e *evaluator) evaluateSubmodules(ctx context.Context, parent *terraform.Module, fsMap map[string]fs.FS) terraform.Modules {
 	submodules := e.loadSubmodules(ctx)
+
+	if len(submodules) == 0 {
+		return nil
+	}
+
+	e.logger.Debug("Starting submodules evaluation...")
 
 	for i := 0; i < maxContextIterations; i++ {
 		changed := false
@@ -145,25 +169,32 @@ func (e *evaluator) EvaluateAll(ctx context.Context) (terraform.Modules, map[str
 			changed = changed || e.evaluateSubmodule(ctx, sm)
 		}
 		if !changed {
-			e.debug.Log("All submodules are evaluated at i=%d", i)
+			e.logger.Debug("All submodules are evaluated", log.Int("loop", i))
 			break
 		}
 	}
 
-	e.debug.Log("Starting post-submodule evaluation...")
+	e.logger.Debug("Starting post-submodule evaluation...")
 	e.evaluateSteps()
 
 	var modules terraform.Modules
 	for _, sm := range submodules {
+		// Assign the parent placeholder to any submodules without a parent. Any modules
+		// with a parent already have their correct parent placeholder assigned.
+		for _, submod := range sm.modules {
+			if submod.Parent() == nil {
+				submod.SetParent(parent)
+			}
+		}
+
 		modules = append(modules, sm.modules...)
-		fsMap = lo.Assign(fsMap, sm.fsMap)
+		for k, v := range sm.fsMap {
+			fsMap[k] = v
+		}
 	}
 
-	e.debug.Log("Finished processing %d submodule(s).", len(modules))
-
-	e.debug.Log("Module evaluation complete.")
-	rootModule := terraform.NewModule(e.projectRootPath, e.modulePath, e.blocks, e.ignores)
-	return append(terraform.Modules{rootModule}, modules...), fsMap
+	e.logger.Debug("Finished processing submodule(s).", log.Int("count", len(modules)))
+	return modules
 }
 
 type submodule struct {
@@ -182,7 +213,7 @@ func (e *evaluator) loadSubmodules(ctx context.Context) []*submodule {
 		if errors.Is(err, ErrNoFiles) {
 			continue
 		} else if err != nil {
-			e.debug.Log("Failed to load submodule '%s': %s.", definition.Name, err)
+			e.logger.Error("Failed to load submodule", log.String("name", definition.Name), log.Err(err))
 			continue
 		}
 
@@ -200,20 +231,27 @@ func (e *evaluator) evaluateSubmodule(ctx context.Context, sm *submodule) bool {
 	inputVars := sm.definition.inputVars()
 	if len(sm.modules) > 0 {
 		if reflect.DeepEqual(inputVars, sm.lastState) {
-			e.debug.Log("Submodule %s inputs unchanged", sm.definition.Name)
+			e.logger.Debug("Submodule inputs unchanged", log.String("name", sm.definition.Name))
 			return false
 		}
 	}
 
-	e.debug.Log("Evaluating submodule %s", sm.definition.Name)
+	e.logger.Debug("Evaluating submodule", log.String("name", sm.definition.Name))
 	sm.eval.inputVars = inputVars
 	sm.modules, sm.fsMap = sm.eval.EvaluateAll(ctx)
 	outputs := sm.eval.exportOutputs()
+
+	valueMap := e.ctx.Get("module").AsValueMap()
+	if valueMap == nil {
+		valueMap = make(map[string]cty.Value)
+	}
 
 	// lastState needs to be captured after applying outputs – so that they
 	// don't get treated as changes – but before running post-submodule
 	// evaluation, so that changes from that can trigger re-evaluations of
 	// the submodule if/when they feed back into inputs.
+	ref := sm.definition.Definition.Reference()
+	e.ctx.Set(blockInstanceValues(sm.definition.Definition, valueMap, outputs), "module", ref.NameLabel())
 	e.ctx.Set(outputs, "module", sm.definition.Name)
 	sm.lastState = sm.definition.inputVars()
 	e.evaluateSteps()
@@ -224,10 +262,12 @@ func (e *evaluator) evaluateSteps() {
 	var lastContext hcl.EvalContext
 	for i := 0; i < maxContextIterations; i++ {
 
+		e.logger.Debug("Starting iteration", log.Int("iteration", i))
 		e.evaluateStep()
 
 		// if ctx matches the last evaluation, we can bail, nothing left to resolve
 		if i > 0 && reflect.DeepEqual(lastContext.Variables, e.ctx.Inner().Variables) {
+			e.logger.Debug("Context unchanged", log.Int("iteration", i))
 			break
 		}
 		if len(e.ctx.Inner().Variables) != len(lastContext.Variables) {
@@ -240,43 +280,29 @@ func (e *evaluator) evaluateSteps() {
 }
 
 func (e *evaluator) expandBlocks(blocks terraform.Blocks) terraform.Blocks {
-	return e.expandDynamicBlocks(e.expandBlockForEaches(e.expandBlockCounts(blocks), false)...)
+	return e.expandDynamicBlocks(e.expandBlockForEaches(e.expandBlockCounts(blocks))...)
 }
 
 func (e *evaluator) expandDynamicBlocks(blocks ...*terraform.Block) terraform.Blocks {
 	for _, b := range blocks {
-		e.expandDynamicBlock(b)
+		if err := b.ExpandBlock(); err != nil {
+			e.logger.Debug(`Failed to expand dynamic block.`,
+				log.String("block", b.FullName()), log.Err(err))
+		}
 	}
 	return blocks
 }
 
-func (e *evaluator) expandDynamicBlock(b *terraform.Block) {
-	for _, sub := range b.AllBlocks() {
-		e.expandDynamicBlock(sub)
-	}
-	for _, sub := range b.AllBlocks().OfType("dynamic") {
-		if sub.IsExpanded() {
-			continue
-		}
-		blockName := sub.TypeLabel()
-		expanded := e.expandBlockForEaches(terraform.Blocks{sub}, true)
-		for _, ex := range expanded {
-			if content := ex.GetBlock("content"); content.IsNotNil() {
-				_ = e.expandDynamicBlocks(content)
-				b.InjectBlock(content, blockName)
-			}
-		}
-		if len(expanded) > 0 {
-			sub.MarkExpanded()
-		}
-	}
-}
-
 func isBlockSupportsForEachMetaArgument(block *terraform.Block) bool {
-	return slices.Contains([]string{"module", "resource", "data", "dynamic"}, block.Type())
+	return slices.Contains([]string{
+		"module",
+		"resource",
+		"data",
+	}, block.Type())
 }
 
-func (e *evaluator) expandBlockForEaches(blocks terraform.Blocks, isDynamic bool) terraform.Blocks {
+func (e *evaluator) expandBlockForEaches(blocks terraform.Blocks) terraform.Blocks {
+
 	var forEachFiltered terraform.Blocks
 
 	for _, block := range blocks {
@@ -291,6 +317,10 @@ func (e *evaluator) expandBlockForEaches(blocks terraform.Blocks, isDynamic bool
 		forEachVal := forEachAttr.Value()
 
 		if forEachVal.IsNull() || !forEachVal.IsKnown() || !forEachAttr.IsIterable() {
+			e.logger.Debug(`Failed to expand block. Invalid "for-each" argument. Must be known and iterable.`,
+				log.String("block", block.FullName()),
+				log.String("value", forEachVal.GoString()),
+			)
 			continue
 		}
 
@@ -304,9 +334,12 @@ func (e *evaluator) expandBlockForEaches(blocks terraform.Blocks, isDynamic bool
 			// instances are identified by a map key (or set member) from the value provided to for_each
 			idx, err := convert.Convert(key, cty.String)
 			if err != nil {
-				e.debug.Log(
-					`Invalid "for-each" argument: map key (or set value) is not a string, but %s`,
-					key.Type().FriendlyName(),
+				e.logger.Debug(
+					`Failed to expand block. Invalid "for-each" argument: map key (or set value) is not a string`,
+					log.String("block", block.FullName()),
+					log.String("key", key.GoString()),
+					log.String("value", val.GoString()),
+					log.Err(err),
 				)
 				return
 			}
@@ -315,31 +348,34 @@ func (e *evaluator) expandBlockForEaches(blocks terraform.Blocks, isDynamic bool
 			// is the value of the collection. The exception is the use of for-each inside a dynamic block,
 			// because in this case the collection element may not be a primitive value.
 			if (forEachVal.Type().IsCollectionType() || forEachVal.Type().IsTupleType()) &&
-				!forEachVal.Type().IsMapType() && !isDynamic {
+				!forEachVal.Type().IsMapType() {
 				stringVal, err := convert.Convert(val, cty.String)
 				if err != nil {
-					e.debug.Log("Failed to convert for-each arg %v to string", val)
+					e.logger.Debug(
+						"Failed to expand block. Invalid 'for-each' argument: value is not a string",
+						log.String("block", block.FullName()),
+						log.String("key", idx.AsString()),
+						log.String("value", val.GoString()),
+						log.Err(err),
+					)
 					return
 				}
 				idx = stringVal
 			}
 
 			clone := block.Clone(idx)
-
 			ctx := clone.Context()
-
 			e.copyVariables(block, clone)
 
-			ctx.SetByDot(idx, "each.key")
-			ctx.SetByDot(val, "each.value")
-			ctx.Set(idx, block.TypeLabel(), "key")
-			ctx.Set(val, block.TypeLabel(), "value")
+			eachObj := cty.ObjectVal(map[string]cty.Value{
+				"key":   idx,
+				"value": val,
+			})
 
+			ctx.Set(eachObj, "each")
+			ctx.Set(eachObj, block.TypeLabel())
 			forEachFiltered = append(forEachFiltered, clone)
-
-			values := clone.Values()
-			clones[idx.AsString()] = values
-			e.ctx.SetByDot(values, clone.GetMetadata().Reference())
+			clones[idx.AsString()] = clone.Values()
 		})
 
 		metadata := block.GetMetadata()
@@ -350,14 +386,21 @@ func (e *evaluator) expandBlockForEaches(blocks terraform.Blocks, isDynamic bool
 			// So we must replace the old resource with a map with the attributes of the resource.
 			e.ctx.Replace(cty.ObjectVal(clones), metadata.Reference())
 		}
-		e.debug.Log("Expanded block '%s' into %d clones via 'for_each' attribute.", block.LocalName(), len(clones))
+		e.logger.Debug("Expanded block into clones via 'for_each' attribute.",
+			log.String("block", block.FullName()),
+			log.Int("clones", len(clones)),
+		)
 	}
 
 	return forEachFiltered
 }
 
 func isBlockSupportsCountMetaArgument(block *terraform.Block) bool {
-	return slices.Contains([]string{"module", "resource", "data"}, block.Type())
+	return slices.Contains([]string{
+		"module",
+		"resource",
+		"data",
+	}, block.Type())
 }
 
 func (e *evaluator) expandBlockCounts(blocks terraform.Blocks) terraform.Blocks {
@@ -388,7 +431,11 @@ func (e *evaluator) expandBlockCounts(blocks terraform.Blocks) terraform.Blocks 
 		} else {
 			e.ctx.SetByDot(cty.TupleVal(clones), metadata.Reference())
 		}
-		e.debug.Log("Expanded block '%s' into %d clones via 'count' attribute.", block.LocalName(), len(clones))
+		e.logger.Debug(
+			"Expanded block into clones via 'count' attribute.",
+			log.String("block", block.FullName()),
+			log.Int("clones", len(clones)),
+		)
 	}
 
 	return countFiltered
@@ -413,11 +460,12 @@ func (e *evaluator) copyVariables(from, to *terraform.Block) {
 		return
 	}
 
-	srcValue := e.ctx.Root().Get(fromBase, fromRel)
+	rootCtx := e.ctx.Root()
+	srcValue := rootCtx.Get(fromBase, fromRel)
 	if srcValue == cty.NilVal {
 		return
 	}
-	e.ctx.Root().Set(srcValue, fromBase, toRel)
+	rootCtx.Set(srcValue, fromBase, toRel)
 }
 
 func (e *evaluator) evaluateVariable(b *terraform.Block) (cty.Value, error) {
@@ -426,9 +474,6 @@ func (e *evaluator) evaluateVariable(b *terraform.Block) (cty.Value, error) {
 	}
 
 	attributes := b.Attributes()
-	if attributes == nil {
-		return cty.NilVal, errors.New("cannot resolve variable with no attributes")
-	}
 
 	var valType cty.Type
 	var defaults *typeexpr.Defaults
@@ -443,7 +488,7 @@ func (e *evaluator) evaluateVariable(b *terraform.Block) (cty.Value, error) {
 
 	var val cty.Value
 
-	if override, exists := e.inputVars[b.Label()]; exists {
+	if override, exists := e.inputVars[b.Label()]; exists && override.Type() != cty.NilType {
 		val = override
 	} else if def, exists := attributes["default"]; exists {
 		val = def.NullableValue()
@@ -486,7 +531,6 @@ func (e *evaluator) getValuesByBlockType(blockType string) cty.Value {
 	values := make(map[string]cty.Value)
 
 	for _, b := range blocksOfType {
-
 		switch b.Type() {
 		case "variable": // variables are special in that their value comes from the "default" attribute
 			val, err := e.evaluateVariable(b)
@@ -501,34 +545,98 @@ func (e *evaluator) getValuesByBlockType(blockType string) cty.Value {
 			}
 			values[b.Label()] = val
 		case "locals", "moved", "import":
-			for key, val := range b.Values().AsValueMap() {
-				values[key] = val
-			}
+			maps.Copy(values, b.Values().AsValueMap())
 		case "provider", "module", "check":
 			if b.Label() == "" {
 				continue
 			}
 			values[b.Label()] = b.Values()
-		case "resource", "data":
+		case "data":
 			if len(b.Labels()) < 2 {
 				continue
 			}
 
-			blockMap, ok := values[b.Labels()[0]]
+			// Data blocks should all be loaded into the top level 'values'
+			// object. The hierarchy of the map is:
+			//  values = map[<type>]map[<name>] =
+			//              Block -> Block's attributes as a cty.Object
+			//              Tuple(Block) -> Instances of the block
+			//              Object(Block) -> Field values are instances of the block
+			ref := b.Reference()
+			typeValues, ok := values[ref.TypeLabel()]
 			if !ok {
-				values[b.Labels()[0]] = cty.ObjectVal(make(map[string]cty.Value))
-				blockMap = values[b.Labels()[0]]
+				typeValues = cty.ObjectVal(make(map[string]cty.Value))
+				values[ref.TypeLabel()] = typeValues
 			}
 
-			valueMap := blockMap.AsValueMap()
+			valueMap := typeValues.AsValueMap()
 			if valueMap == nil {
 				valueMap = make(map[string]cty.Value)
 			}
+			valueMap[ref.NameLabel()] = blockInstanceValues(b, valueMap, b.Values())
 
-			valueMap[b.Labels()[1]] = b.Values()
-			values[b.Labels()[0]] = cty.ObjectVal(valueMap)
+			// Update the map of all blocks with the same type.
+			values[ref.TypeLabel()] = cty.ObjectVal(valueMap)
 		}
 	}
 
 	return cty.ObjectVal(values)
+}
+
+func (e *evaluator) getResources() map[string]cty.Value {
+	values := make(map[string]map[string]cty.Value)
+
+	for _, b := range e.blocks {
+		if b.Type() != "resource" || len(b.Labels()) < 2 {
+			continue
+		}
+
+		ref := b.Reference()
+		typeValues, exists := values[ref.TypeLabel()]
+		if !exists {
+			typeValues = make(map[string]cty.Value)
+			values[ref.TypeLabel()] = typeValues
+		}
+		typeValues[ref.NameLabel()] = blockInstanceValues(b, typeValues, b.Values())
+	}
+
+	return lo.MapValues(values, func(v map[string]cty.Value, _ string) cty.Value {
+		return cty.ObjectVal(v)
+	})
+}
+
+// blockInstanceValues returns a cty.Value containing the values of the block instances.
+// If the count argument is used, a tuple is returned where the index corresponds to the argument index.
+// If the for_each argument is used, an object is returned where the key corresponds to the argument key.
+// In other cases, the values of the block itself are returned.
+func blockInstanceValues(b *terraform.Block, typeValues map[string]cty.Value, values cty.Value) cty.Value {
+	ref := b.Reference()
+	key := ref.RawKey()
+
+	switch {
+	case key.Type().Equals(cty.Number) && b.GetAttribute("count") != nil:
+		idx, _ := key.AsBigFloat().Int64()
+		return insertTupleElement(typeValues[ref.NameLabel()], int(idx), values)
+	case isForEachKey(key) && b.GetAttribute("for_each") != nil:
+		keyStr := ref.Key()
+
+		instancesVal, exists := typeValues[ref.NameLabel()]
+		if !exists || !instancesVal.CanIterateElements() {
+			instancesVal = cty.EmptyObjectVal
+		}
+
+		instances := instancesVal.AsValueMap()
+		if instances == nil {
+			instances = make(map[string]cty.Value)
+		}
+
+		instances[keyStr] = values
+		return cty.ObjectVal(instances)
+	default:
+		return values
+	}
+}
+
+func isForEachKey(key cty.Value) bool {
+	return key.Type().Equals(cty.Number) || key.Type().Equals(cty.String)
 }

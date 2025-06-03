@@ -21,6 +21,12 @@ func main() {
 		if errors.As(err, &exitError) {
 			os.Exit(exitError.Code)
 		}
+
+		var userErr *types.UserError
+		if errors.As(err, &userErr) {
+			log.Fatal("Error", log.Err(userErr))
+		}
+
 		log.Fatal("Fatal error", log.Err(err))
 	}
 }
@@ -28,18 +34,13 @@ func main() {
 func run() error {
 	// Trivy behaves as the specified plugin.
 	if runAsPlugin := os.Getenv("TRIVY_RUN_AS_PLUGIN"); runAsPlugin != "" {
-		if !plugin.IsPredefined(runAsPlugin) {
-			return xerrors.Errorf("unknown plugin: %s", runAsPlugin)
-		}
-		if err := plugin.RunWithURL(context.Background(), runAsPlugin, plugin.RunOptions{Args: os.Args[1:]}); err != nil {
+		log.InitLogger(false, false)
+		if err := plugin.Run(context.Background(), runAsPlugin, plugin.Options{Args: os.Args[1:]}); err != nil {
 			return xerrors.Errorf("plugin error: %w", err)
 		}
 		return nil
 	}
 
 	app := commands.NewApp()
-	if err := app.Execute(); err != nil {
-		return err
-	}
-	return nil
+	return app.Execute()
 }

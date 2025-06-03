@@ -4,20 +4,20 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"slices"
 
 	"github.com/hashicorp/go-multierror"
 	"github.com/samber/lo"
 	"github.com/spf13/viper"
-	"golang.org/x/exp/slices"
 	"golang.org/x/xerrors"
 
-	"github.com/aquasecurity/go-version/pkg/semver"
-	"github.com/aquasecurity/trivy-db/pkg/db"
-	tcache "github.com/aquasecurity/trivy/pkg/cache"
+	"github.com/aquasecurity/trivy/pkg/cache"
 	"github.com/aquasecurity/trivy/pkg/commands/operation"
+	"github.com/aquasecurity/trivy/pkg/db"
+	"github.com/aquasecurity/trivy/pkg/extension"
 	"github.com/aquasecurity/trivy/pkg/fanal/analyzer"
 	"github.com/aquasecurity/trivy/pkg/fanal/artifact"
-	"github.com/aquasecurity/trivy/pkg/fanal/cache"
 	ftypes "github.com/aquasecurity/trivy/pkg/fanal/types"
 	"github.com/aquasecurity/trivy/pkg/fanal/walker"
 	"github.com/aquasecurity/trivy/pkg/flag"
@@ -26,13 +26,14 @@ import (
 	"github.com/aquasecurity/trivy/pkg/log"
 	"github.com/aquasecurity/trivy/pkg/misconf"
 	"github.com/aquasecurity/trivy/pkg/module"
+	"github.com/aquasecurity/trivy/pkg/notification"
 	"github.com/aquasecurity/trivy/pkg/policy"
 	pkgReport "github.com/aquasecurity/trivy/pkg/report"
 	"github.com/aquasecurity/trivy/pkg/result"
 	"github.com/aquasecurity/trivy/pkg/rpc/client"
-	"github.com/aquasecurity/trivy/pkg/scanner"
+	"github.com/aquasecurity/trivy/pkg/scan"
 	"github.com/aquasecurity/trivy/pkg/types"
-	"github.com/aquasecurity/trivy/pkg/utils/fsutils"
+	"github.com/aquasecurity/trivy/pkg/version/doc"
 )
 
 // TargetKind represents what kind of artifact Trivy scans
@@ -43,30 +44,27 @@ const (
 	TargetFilesystem     TargetKind = "fs"
 	TargetRootfs         TargetKind = "rootfs"
 	TargetRepository     TargetKind = "repo"
-	TargetImageArchive   TargetKind = "archive"
 	TargetSBOM           TargetKind = "sbom"
 	TargetVM             TargetKind = "vm"
-
-	devVersion = "dev"
 )
 
 var (
 	SkipScan = errors.New("skip subsequent processes")
 )
 
-// InitializeScanner defines the initialize function signature of scanner
-type InitializeScanner func(context.Context, ScannerConfig) (scanner.Scanner, func(), error)
+// InitializeScanService defines the initialize function signature of scan service
+type InitializeScanService func(context.Context, ScannerConfig) (scan.Service, func(), error)
 
 type ScannerConfig struct {
 	// e.g. image name and file path
 	Target string
 
 	// Cache
-	ArtifactCache      cache.ArtifactCache
-	LocalArtifactCache cache.LocalArtifactCache
+	CacheOptions       cache.Options
+	RemoteCacheOptions cache.RemoteOptions
 
 	// Client/Server options
-	ServerOption client.ScannerOption
+	ServerOption client.ServiceOption
 
 	// Artifact options
 	ArtifactOption artifact.Option
@@ -94,38 +92,47 @@ type Runner interface {
 }
 
 type runner struct {
-	cache  cache.Cache
-	dbOpen bool
+	initializeScanService InitializeScanService
+	versionChecker        *notification.VersionChecker
+	dbOpen                bool
 
 	// WASM modules
 	module *module.Manager
 }
 
-type runnerOption func(*runner)
+type RunnerOption func(*runner)
 
-// WithCacheClient takes a custom cache implementation
+// WithInitializeService takes a custom service initialization function.
 // It is useful when Trivy is imported as a library.
-func WithCacheClient(c cache.Cache) runnerOption {
+func WithInitializeService(f InitializeScanService) RunnerOption {
 	return func(r *runner) {
-		r.cache = c
+		r.initializeScanService = f
 	}
 }
 
 // NewRunner initializes Runner that provides scanning functionalities.
 // It is possible to return SkipScan and it must be handled by caller.
-func NewRunner(ctx context.Context, cliOptions flag.Options, opts ...runnerOption) (Runner, error) {
+func NewRunner(ctx context.Context, cliOptions flag.Options, opts ...RunnerOption) (Runner, error) {
 	r := &runner{}
 	for _, opt := range opts {
 		opt(r)
 	}
 
-	if err := r.initCache(cliOptions); err != nil {
-		return nil, xerrors.Errorf("cache error: %w", err)
-	}
+	// If the user has not disabled notices or is running in quiet mode
+	r.versionChecker = notification.NewVersionChecker(
+		notification.WithSkipVersionCheck(cliOptions.SkipVersionCheck),
+		notification.WithQuietMode(cliOptions.Quiet),
+		notification.WithTelemetryDisabled(cliOptions.DisableTelemetry),
+	)
 
 	// Update the vulnerability database if needed.
 	if err := r.initDB(ctx, cliOptions); err != nil {
 		return nil, xerrors.Errorf("DB error: %w", err)
+	}
+
+	// Update the VEX repositories if needed
+	if err := operation.DownloadVEXRepositories(ctx, cliOptions); err != nil {
+		return nil, xerrors.Errorf("VEX repositories download error: %w", err)
 	}
 
 	// Initialize WASM modules
@@ -139,16 +146,19 @@ func NewRunner(ctx context.Context, cliOptions flag.Options, opts ...runnerOptio
 	m.Register()
 	r.module = m
 
+	// Make a silent attempt to check for updates in the background
+	// only do this if the user has not disabled notices or is running
+	// in quiet mode
+	if r.versionChecker != nil {
+		r.versionChecker.RunUpdateCheck(ctx, os.Args[1:])
+	}
+
 	return r, nil
 }
 
 // Close closes everything
 func (r *runner) Close(ctx context.Context) error {
 	var errs error
-	if err := r.cache.Close(); err != nil {
-		errs = multierror.Append(errs, err)
-	}
-
 	if r.dbOpen {
 		if err := db.Close(); err != nil {
 			errs = multierror.Append(errs, err)
@@ -158,6 +168,12 @@ func (r *runner) Close(ctx context.Context) error {
 	if err := r.module.Close(ctx); err != nil {
 		errs = multierror.Append(errs, err)
 	}
+
+	// silently check if there is notifications
+	if r.versionChecker != nil {
+		r.versionChecker.PrintNotices(os.Stderr)
+	}
+
 	return errs
 }
 
@@ -165,20 +181,20 @@ func (r *runner) ScanImage(ctx context.Context, opts flag.Options) (types.Report
 	// Disable the lock file scanning
 	opts.DisabledAnalyzers = analyzer.TypeLockfiles
 
-	var s InitializeScanner
+	var s InitializeScanService
 	switch {
 	case opts.Input != "" && opts.ServerAddr == "":
 		// Scan image tarball in standalone mode
-		s = archiveStandaloneScanner
+		s = archiveStandaloneScanService
 	case opts.Input != "" && opts.ServerAddr != "":
 		// Scan image tarball in client/server mode
-		s = archiveRemoteScanner
+		s = archiveRemoteScanService
 	case opts.Input == "" && opts.ServerAddr == "":
 		// Scan container image in standalone mode
-		s = imageStandaloneScanner
+		s = imageStandaloneScanService
 	case opts.Input == "" && opts.ServerAddr != "":
 		// Scan container image in client/server mode
-		s = imageRemoteScanner
+		s = imageRemoteScanService
 	}
 
 	return r.scanArtifact(ctx, opts, s)
@@ -200,13 +216,13 @@ func (r *runner) ScanRootfs(ctx context.Context, opts flag.Options) (types.Repor
 }
 
 func (r *runner) scanFS(ctx context.Context, opts flag.Options) (types.Report, error) {
-	var s InitializeScanner
+	var s InitializeScanService
 	if opts.ServerAddr == "" {
 		// Scan filesystem in standalone mode
-		s = filesystemStandaloneScanner
+		s = filesystemStandaloneScanService
 	} else {
 		// Scan filesystem in client/server mode
-		s = filesystemRemoteScanner
+		s = filesystemRemoteScanService
 	}
 
 	return r.scanArtifact(ctx, opts, s)
@@ -214,31 +230,31 @@ func (r *runner) scanFS(ctx context.Context, opts flag.Options) (types.Report, e
 
 func (r *runner) ScanRepository(ctx context.Context, opts flag.Options) (types.Report, error) {
 	// Do not scan OS packages
-	opts.VulnType = []string{types.VulnTypeLibrary}
+	opts.PkgTypes = []string{types.PkgTypeLibrary}
 
 	// Disable the OS analyzers, individual package analyzers and SBOM analyzer
 	opts.DisabledAnalyzers = append(analyzer.TypeIndividualPkgs, analyzer.TypeOSes...)
 	opts.DisabledAnalyzers = append(opts.DisabledAnalyzers, analyzer.TypeSBOM)
 
-	var s InitializeScanner
+	var s InitializeScanService
 	if opts.ServerAddr == "" {
 		// Scan repository in standalone mode
-		s = repositoryStandaloneScanner
+		s = repositoryStandaloneScanService
 	} else {
 		// Scan repository in client/server mode
-		s = repositoryRemoteScanner
+		s = repositoryRemoteScanService
 	}
 	return r.scanArtifact(ctx, opts, s)
 }
 
 func (r *runner) ScanSBOM(ctx context.Context, opts flag.Options) (types.Report, error) {
-	var s InitializeScanner
+	var s InitializeScanService
 	if opts.ServerAddr == "" {
 		// Scan cycloneDX in standalone mode
-		s = sbomStandaloneScanner
+		s = sbomStandaloneScanService
 	} else {
 		// Scan cycloneDX in client/server mode
-		s = sbomRemoteScanner
+		s = sbomRemoteScanService
 	}
 
 	return r.scanArtifact(ctx, opts, s)
@@ -248,20 +264,23 @@ func (r *runner) ScanVM(ctx context.Context, opts flag.Options) (types.Report, e
 	// TODO: Does VM scan disable lock file..?
 	opts.DisabledAnalyzers = analyzer.TypeLockfiles
 
-	var s InitializeScanner
+	var s InitializeScanService
 	if opts.ServerAddr == "" {
 		// Scan virtual machine in standalone mode
-		s = vmStandaloneScanner
+		s = vmStandaloneScanService
 	} else {
 		// Scan virtual machine in client/server mode
-		s = vmRemoteScanner
+		s = vmRemoteScanService
 	}
 
 	return r.scanArtifact(ctx, opts, s)
 }
 
-func (r *runner) scanArtifact(ctx context.Context, opts flag.Options, initializeScanner InitializeScanner) (types.Report, error) {
-	report, err := scan(ctx, opts, initializeScanner, r.cache)
+func (r *runner) scanArtifact(ctx context.Context, opts flag.Options, initializeService InitializeScanService) (types.Report, error) {
+	if r.initializeScanService != nil {
+		initializeService = r.initializeScanService
+	}
+	report, err := r.scan(ctx, opts, initializeService)
 	if err != nil {
 		return types.Report{}, xerrors.Errorf("scan error: %w", err)
 	}
@@ -281,7 +300,6 @@ func (r *runner) Report(ctx context.Context, opts flag.Options, report types.Rep
 	if err := pkgReport.Write(ctx, report, opts); err != nil {
 		return xerrors.Errorf("unable to write results: %w", err)
 	}
-
 	return nil
 }
 
@@ -297,7 +315,7 @@ func (r *runner) initDB(ctx context.Context, opts flag.Options) error {
 
 	// download the database file
 	noProgress := opts.Quiet || opts.NoProgress
-	if err := operation.DownloadDB(ctx, opts.AppVersion, opts.CacheDir, opts.DBRepository, noProgress, opts.SkipDBUpdate, opts.RegistryOpts()); err != nil {
+	if err := operation.DownloadDB(ctx, opts.AppVersion, opts.CacheDir, opts.DBRepositories, noProgress, opts.SkipDBUpdate, opts.RegistryOpts()); err != nil {
 		return err
 	}
 
@@ -305,7 +323,7 @@ func (r *runner) initDB(ctx context.Context, opts flag.Options) error {
 		return SkipScan
 	}
 
-	if err := db.Init(opts.CacheDir); err != nil {
+	if err := db.Init(db.Dir(opts.CacheDir)); err != nil {
 		return xerrors.Errorf("error in vulnerability DB initialize: %w", err)
 	}
 	r.dbOpen = true
@@ -327,7 +345,7 @@ func (r *runner) initJavaDB(opts flag.Options) error {
 
 	// Update the Java DB
 	noProgress := opts.Quiet || opts.NoProgress
-	javadb.Init(opts.CacheDir, opts.JavaDBRepository, opts.SkipJavaDBUpdate, noProgress, opts.RegistryOpts())
+	javadb.Init(opts.CacheDir, opts.JavaDBRepositories, opts.SkipJavaDBUpdate, noProgress, opts.RegistryOpts())
 	if opts.DownloadJavaDBOnly {
 		if err := javadb.Update(); err != nil {
 			return xerrors.Errorf("Java DB error: %w", err)
@@ -338,58 +356,6 @@ func (r *runner) initJavaDB(opts flag.Options) error {
 	return nil
 }
 
-func (r *runner) initCache(opts flag.Options) error {
-	// Skip initializing cache when custom cache is passed
-	if r.cache != nil {
-		return nil
-	}
-
-	// client/server mode
-	if opts.ServerAddr != "" {
-		remoteCache := tcache.NewRemoteCache(opts.ServerAddr, opts.CustomHeaders, opts.Insecure)
-		r.cache = tcache.NopCache(remoteCache)
-		return nil
-	}
-
-	// standalone mode
-	fsutils.SetCacheDir(opts.CacheDir)
-	cacheClient, err := operation.NewCache(opts.CacheOptions)
-	if err != nil {
-		return xerrors.Errorf("unable to initialize the cache: %w", err)
-	}
-	log.Debug("Cache dir", log.String("dir", fsutils.CacheDir()))
-
-	if opts.Reset {
-		defer cacheClient.Close()
-		if err = cacheClient.Reset(); err != nil {
-			return xerrors.Errorf("cache reset error: %w", err)
-		}
-		return SkipScan
-	}
-
-	if opts.ResetChecksBundle {
-		c, err := policy.NewClient(fsutils.CacheDir(), true, opts.MisconfOptions.ChecksBundleRepository)
-		if err != nil {
-			return xerrors.Errorf("failed to instantiate check client: %w", err)
-		}
-		if err := c.Clear(); err != nil {
-			return xerrors.Errorf("failed to remove the cache: %w", err)
-		}
-		return SkipScan
-	}
-
-	if opts.ClearCache {
-		defer cacheClient.Close()
-		if err = cacheClient.ClearArtifacts(); err != nil {
-			return xerrors.Errorf("cache clear error: %w", err)
-		}
-		return SkipScan
-	}
-
-	r.cache = cacheClient
-	return nil
-}
-
 // Run performs artifact scanning
 func Run(ctx context.Context, opts flag.Options, targetKind TargetKind) (err error) {
 	ctx, cancel := context.WithTimeout(ctx, opts.Timeout)
@@ -397,76 +363,114 @@ func Run(ctx context.Context, opts flag.Options, targetKind TargetKind) (err err
 
 	defer func() {
 		if errors.Is(err, context.DeadlineExceeded) {
-			log.Warn("Increase --timeout value")
+			// e.g. https://trivy.dev/latest/docs/configuration/
+			log.WarnContext(ctx, fmt.Sprintf("Provide a higher timeout value, see %s", doc.URL("/docs/configuration/", "")))
 		}
 	}()
 
+	if opts.ServerAddr != "" && opts.Scanners.AnyEnabled(types.MisconfigScanner, types.SecretScanner) {
+		log.WarnContext(ctx,
+			fmt.Sprintf(
+				"Trivy runs in client/server mode, but misconfiguration and license scanning will be done on the client side, see %s",
+				doc.URL("/docs/references/modes/client-server", ""),
+			),
+		)
+	}
+
 	if opts.GenerateDefaultConfig {
 		log.Info("Writing the default config to trivy-default.yaml...")
-		return viper.SafeWriteConfigAs("trivy-default.yaml")
+
+		hiddenFlags := flag.HiddenFlags()
+		// Viper does not have the ability to remove flags.
+		// So we only save the necessary flags and set these flags after viper.Reset
+		v := viper.New()
+		for _, k := range viper.AllKeys() {
+			// Skip the `GenerateDefaultConfigFlag` flags to avoid errors with default config file.
+			// Users often use "normal" formats instead of compliance. So we'll skip ComplianceFlag
+			// Also don't keep removed or deprecated flags to avoid confusing users.
+			if k == flag.GenerateDefaultConfigFlag.ConfigName || k == flag.ComplianceFlag.ConfigName || slices.Contains(hiddenFlags, k) {
+				continue
+			}
+			v.Set(k, viper.Get(k))
+		}
+
+		return v.SafeWriteConfigAs("trivy-default.yaml")
 	}
 
-	r, err := NewRunner(ctx, opts)
+	// Call pre-run hooks
+	if err := extension.PreRun(ctx, opts); err != nil {
+		return xerrors.Errorf("pre run error: %w", err)
+	}
+
+	// Run the application
+	report, err := run(ctx, opts, targetKind)
 	if err != nil {
-		if errors.Is(err, SkipScan) {
-			return nil
-		}
-		return xerrors.Errorf("init error: %w", err)
-	}
-	defer r.Close(ctx)
-
-	var report types.Report
-	switch targetKind {
-	case TargetContainerImage, TargetImageArchive:
-		if report, err = r.ScanImage(ctx, opts); err != nil {
-			return xerrors.Errorf("image scan error: %w", err)
-		}
-	case TargetFilesystem:
-		if report, err = r.ScanFilesystem(ctx, opts); err != nil {
-			return xerrors.Errorf("filesystem scan error: %w", err)
-		}
-	case TargetRootfs:
-		if report, err = r.ScanRootfs(ctx, opts); err != nil {
-			return xerrors.Errorf("rootfs scan error: %w", err)
-		}
-	case TargetRepository:
-		if report, err = r.ScanRepository(ctx, opts); err != nil {
-			return xerrors.Errorf("repository scan error: %w", err)
-		}
-	case TargetSBOM:
-		if report, err = r.ScanSBOM(ctx, opts); err != nil {
-			return xerrors.Errorf("sbom scan error: %w", err)
-		}
-	case TargetVM:
-		if report, err = r.ScanVM(ctx, opts); err != nil {
-			return xerrors.Errorf("vm scan error: %w", err)
-		}
+		return xerrors.Errorf("run error: %w", err)
 	}
 
-	report, err = r.Filter(ctx, opts, report)
-	if err != nil {
-		return xerrors.Errorf("filter error: %w", err)
-	}
-
-	if err = r.Report(ctx, opts, report); err != nil {
-		return xerrors.Errorf("report error: %w", err)
+	// Call post-run hooks
+	if err := extension.PostRun(ctx, opts); err != nil {
+		return xerrors.Errorf("post run error: %w", err)
 	}
 
 	return operation.Exit(opts, report.Results.Failed(), report.Metadata)
+}
+
+func run(ctx context.Context, opts flag.Options, targetKind TargetKind) (types.Report, error) {
+	r, err := NewRunner(ctx, opts)
+	if err != nil {
+		if errors.Is(err, SkipScan) {
+			return types.Report{}, nil
+		}
+		return types.Report{}, xerrors.Errorf("init error: %w", err)
+	}
+	defer r.Close(ctx)
+
+	scans := map[TargetKind]func(context.Context, flag.Options) (types.Report, error){
+		TargetContainerImage: r.ScanImage,
+		TargetFilesystem:     r.ScanFilesystem,
+		TargetRootfs:         r.ScanRootfs,
+		TargetRepository:     r.ScanRepository,
+		TargetSBOM:           r.ScanSBOM,
+		TargetVM:             r.ScanVM,
+	}
+
+	scanFunction, exists := scans[targetKind]
+	if !exists {
+		return types.Report{}, xerrors.Errorf("unknown target kind: %s", targetKind)
+	}
+
+	// 1. Scan the artifact
+	report, err := scanFunction(ctx, opts)
+	if err != nil {
+		return types.Report{}, xerrors.Errorf("%s scan error: %w", targetKind, err)
+	}
+
+	// 2. Filter the results
+	report, err = r.Filter(ctx, opts, report)
+	if err != nil {
+		return types.Report{}, xerrors.Errorf("filter error: %w", err)
+	}
+
+	// 3. Report the results
+	if err = r.Report(ctx, opts, report); err != nil {
+		return types.Report{}, xerrors.Errorf("report error: %w", err)
+	}
+
+	return report, nil
 }
 
 func disabledAnalyzers(opts flag.Options) []analyzer.Type {
 	// Specified analyzers to be disabled depending on scanning modes
 	// e.g. The 'image' subcommand should disable the lock file scanning.
 	analyzers := opts.DisabledAnalyzers
-
 	// It doesn't analyze apk commands by default.
 	if !opts.ScanRemovedPkgs {
 		analyzers = append(analyzers, analyzer.TypeApkCommand)
 	}
 
 	// Do not analyze programming language packages when not running in 'library'
-	if !slices.Contains(opts.VulnType, types.VulnTypeLibrary) {
+	if !slices.Contains(opts.PkgTypes, types.PkgTypeLibrary) {
 		analyzers = append(analyzers, analyzer.TypeLanguages...)
 	}
 
@@ -475,18 +479,16 @@ func disabledAnalyzers(opts flag.Options) []analyzer.Type {
 		analyzers = append(analyzers, analyzer.TypeSecret)
 	}
 
-	// Filter only enabled misconfiguration scanners
-	ma, err := filterMisconfigAnalyzers(opts.MisconfigScanners, analyzer.TypeConfigFiles)
-	if err != nil {
-		log.Error("Invalid misconfiguration scanners specified, defaulting to use all misconfig scanners",
-			log.Any("scanners", opts.MisconfigScanners))
-	} else {
-		analyzers = append(analyzers, ma...)
-	}
-
 	// Do not perform misconfiguration scanning when it is not specified.
 	if !opts.Scanners.AnyEnabled(types.MisconfigScanner, types.RBACScanner) {
 		analyzers = append(analyzers, analyzer.TypeConfigFiles...)
+	} else {
+		// Filter only enabled misconfiguration scanners
+		ma := disabledMisconfigAnalyzers(opts.MisconfigScanners)
+		analyzers = append(analyzers, ma...)
+
+		log.Debug("Enabling misconfiguration scanners",
+			log.Any("scanners", lo.Without(analyzer.TypeConfigFiles, ma...)))
 	}
 
 	// Scanning file headers and license files is expensive.
@@ -514,118 +516,98 @@ func disabledAnalyzers(opts flag.Options) []analyzer.Type {
 		analyzers = append(analyzers, analyzer.TypeExecutable)
 	}
 
+	// Disable RPM archive analyzer unless the environment variable is set
+	// TODO: add '--enable-analyzers' and delete this environment variable
+	if os.Getenv("TRIVY_EXPERIMENTAL_RPM_ARCHIVE") == "" {
+		analyzers = append(analyzers, analyzer.TypeRpmArchive)
+	}
+
 	return analyzers
 }
 
-func filterMisconfigAnalyzers(included, all []analyzer.Type) ([]analyzer.Type, error) {
-	_, missing := lo.Difference(all, included)
+func disabledMisconfigAnalyzers(included []analyzer.Type) []analyzer.Type {
+	_, missing := lo.Difference(analyzer.TypeConfigFiles, included)
 	if len(missing) > 0 {
-		return nil, xerrors.Errorf("invalid misconfiguration scanner specified %s valid scanners: %s", missing, all)
+		log.Error(
+			"Invalid misconfiguration scanners provided, using default scanners",
+			log.Any("invalid_scanners", missing), log.Any("default_scanners", analyzer.TypeConfigFiles),
+		)
+		return nil
 	}
 
-	log.Debug("Enabling misconfiguration scanners", log.Any("scanners", included))
-	return lo.Without(all, included...), nil
+	return lo.Without(analyzer.TypeConfigFiles, included...)
 }
 
-func initScannerConfig(opts flag.Options, cacheClient cache.Cache) (ScannerConfig, types.ScanOptions, error) {
+func (r *runner) initScannerConfig(ctx context.Context, opts flag.Options) (ScannerConfig, types.ScanOptions, error) {
 	target := opts.Target
 	if opts.Input != "" {
 		target = opts.Input
 	}
 
-	scanOptions := types.ScanOptions{
-		VulnType:            opts.VulnType,
-		Scanners:            opts.Scanners,
-		ImageConfigScanners: opts.ImageConfigScanners, // this is valid only for 'image' subcommand
-		ScanRemovedPackages: opts.ScanRemovedPkgs,     // this is valid only for 'image' subcommand
-		ListAllPackages:     opts.ListAllPkgs,
-		LicenseCategories:   opts.LicenseCategories,
-		FilePatterns:        opts.FilePatterns,
-		IncludeDevDeps:      opts.IncludeDevDeps,
-	}
+	scanOptions := opts.ScanOpts()
 
 	if len(opts.ImageConfigScanners) != 0 {
-		log.Info("Container image config scanners", log.Any("scanners", opts.ImageConfigScanners))
+		log.WithPrefix(log.PrefixContainerImage).Info("Container image config scanners", log.Any("scanners", opts.ImageConfigScanners))
+	}
+
+	if opts.Scanners.Enabled(types.SBOMScanner) {
+		logger := log.WithPrefix(log.PrefixPackage)
+		logger.Debug("Package types", log.Any("types", scanOptions.PkgTypes))
+		logger.Debug("Package relationships", log.Any("relationships", scanOptions.PkgRelationships))
 	}
 
 	if opts.Scanners.Enabled(types.VulnerabilityScanner) {
-		log.Info("Vulnerability scanning is enabled")
-		log.Debug("Vulnerability type", log.Any("type", scanOptions.VulnType))
+		log.WithPrefix(log.PrefixVulnerability).Info("Vulnerability scanning is enabled")
 	}
 
-	// ScannerOption is filled only when config scanning is enabled.
+	// Misconfig ScannerOption is filled only when config scanning is enabled.
 	var configScannerOptions misconf.ScannerOption
 	if opts.Scanners.Enabled(types.MisconfigScanner) || opts.ImageConfigScanners.Enabled(types.MisconfigScanner) {
-		log.Info("Misconfiguration scanning is enabled")
-
-		var downloadedPolicyPaths []string
-		var disableEmbedded bool
-
-		downloadedPolicyPaths, err := operation.InitBuiltinPolicies(context.Background(), opts.CacheDir, opts.Quiet, opts.SkipCheckUpdate, opts.MisconfOptions.ChecksBundleRepository, opts.RegistryOpts())
+		var err error
+		configScannerOptions, err = initMisconfScannerOption(ctx, opts)
 		if err != nil {
-			if !opts.SkipCheckUpdate {
-				log.Error("Falling back to embedded checks", log.Err(err))
-			}
-		} else {
-			log.Debug("Policies successfully loaded from disk")
-			disableEmbedded = true
-		}
-		configScannerOptions = misconf.ScannerOption{
-			Debug:                    opts.Debug,
-			Trace:                    opts.Trace,
-			Namespaces:               append(opts.CheckNamespaces, rego.BuiltinNamespaces()...),
-			PolicyPaths:              append(opts.CheckPaths, downloadedPolicyPaths...),
-			DataPaths:                opts.DataPaths,
-			HelmValues:               opts.HelmValues,
-			HelmValueFiles:           opts.HelmValueFiles,
-			HelmFileValues:           opts.HelmFileValues,
-			HelmStringValues:         opts.HelmStringValues,
-			HelmAPIVersions:          opts.HelmAPIVersions,
-			HelmKubeVersion:          opts.HelmKubeVersion,
-			TerraformTFVars:          opts.TerraformTFVars,
-			CloudFormationParamVars:  opts.CloudFormationParamVars,
-			K8sVersion:               opts.K8sVersion,
-			DisableEmbeddedPolicies:  disableEmbedded,
-			DisableEmbeddedLibraries: disableEmbedded,
-			TfExcludeDownloaded:      opts.TfExcludeDownloaded,
+			return ScannerConfig{}, types.ScanOptions{}, err
 		}
 	}
 
 	// Do not load config file for secret scanning
 	if opts.Scanners.Enabled(types.SecretScanner) {
-		ver := canonicalVersion(opts.AppVersion)
-		log.Info("Secret scanning is enabled")
-		log.Info("If your scanning is slow, please try '--scanners vuln' to disable secret scanning")
-		log.Infof("Please see also https://aquasecurity.github.io/trivy/%s/docs/scanner/secret/#recommendation for faster secret detection", ver)
+		logger := log.WithPrefix(log.PrefixSecret)
+		logger.Info("Secret scanning is enabled")
+		logger.Info("If your scanning is slow, please try '--scanners vuln' to disable secret scanning")
+		// e.g. https://trivy.dev/latest/docs/scanner/secret/#recommendation
+		logger.Info(fmt.Sprintf("Please see also %s for faster secret detection", doc.URL("/docs/scanner/secret/", "recommendation")))
 	} else {
 		opts.SecretConfigPath = ""
 	}
 
 	if opts.Scanners.Enabled(types.LicenseScanner) {
+		logger := log.WithPrefix(log.PrefixLicense)
 		if opts.LicenseFull {
-			log.Info("Full license scanning is enabled")
+			logger.Info("Full license scanning is enabled")
 		} else {
-			log.Info("License scanning is enabled")
+			logger.Info("License scanning is enabled")
 		}
 	}
 
-	// SPDX needs to calculate digests for package files
+	// SPDX and CycloneDX need to calculate digests for package files
 	var fileChecksum bool
-	if opts.Format == types.FormatSPDXJSON || opts.Format == types.FormatSPDX {
+	if opts.Format == types.FormatSPDXJSON || opts.Format == types.FormatSPDX || opts.Format == types.FormatCycloneDX {
 		fileChecksum = true
 	}
 
+	// Disable the post handler for filtering system file when detection priority is comprehensive.
+	disabledHandlers := lo.Ternary(opts.DetectionPriority == ftypes.PriorityComprehensive,
+		[]ftypes.HandlerType{ftypes.SystemFileFilteringPostHandler}, nil)
+
 	return ScannerConfig{
 		Target:             target,
-		ArtifactCache:      cacheClient,
-		LocalArtifactCache: cacheClient,
-		ServerOption: client.ScannerOption{
-			RemoteURL:     opts.ServerAddr,
-			CustomHeaders: opts.CustomHeaders,
-			Insecure:      opts.Insecure,
-		},
+		CacheOptions:       opts.CacheOpts(),
+		RemoteCacheOptions: opts.RemoteCacheOpts(),
+		ServerOption:       opts.ClientScannerOpts(),
 		ArtifactOption: artifact.Option{
 			DisabledAnalyzers: disabledAnalyzers(opts),
+			DisabledHandlers:  disabledHandlers,
 			FilePatterns:      opts.FilePatterns,
 			Parallel:          opts.Parallel,
 			Offline:           opts.OfflineScan,
@@ -636,10 +618,10 @@ func initScannerConfig(opts flag.Options, cacheClient cache.Cache) (ScannerConfi
 			RepoTag:           opts.RepoTag,
 			SBOMSources:       opts.SBOMSources,
 			RekorURL:          opts.RekorURL,
-			//Platform:          opts.Platform,
-			AWSRegion:    opts.Region,
-			AWSEndpoint:  opts.Endpoint,
-			FileChecksum: fileChecksum,
+			AWSRegion:         opts.Region,
+			AWSEndpoint:       opts.Endpoint,
+			FileChecksum:      fileChecksum,
+			DetectionPriority: opts.DetectionPriority,
 
 			// For image scanning
 			ImageOption: ftypes.ImageOptions{
@@ -651,6 +633,7 @@ func initScannerConfig(opts flag.Options, cacheClient cache.Cache) (ScannerConfi
 					Host: opts.PodmanHost,
 				},
 				ImageSources: opts.ImageSources,
+				MaxImageSize: opts.MaxImageSize,
 			},
 
 			// For misconfiguration scanning
@@ -676,15 +659,14 @@ func initScannerConfig(opts flag.Options, cacheClient cache.Cache) (ScannerConfi
 	}, scanOptions, nil
 }
 
-func scan(ctx context.Context, opts flag.Options, initializeScanner InitializeScanner, cacheClient cache.Cache) (
-	types.Report, error) {
-	scannerConfig, scanOptions, err := initScannerConfig(opts, cacheClient)
+func (r *runner) scan(ctx context.Context, opts flag.Options, initializeService InitializeScanService) (types.Report, error) {
+	scannerConfig, scanOptions, err := r.initScannerConfig(ctx, opts)
 	if err != nil {
 		return types.Report{}, err
 	}
-	s, cleanup, err := initializeScanner(ctx, scannerConfig)
+	s, cleanup, err := initializeService(ctx, scannerConfig)
 	if err != nil {
-		return types.Report{}, xerrors.Errorf("unable to initialize a scanner: %w", err)
+		return types.Report{}, xerrors.Errorf("unable to initialize a scan service: %w", err)
 	}
 	defer cleanup()
 
@@ -695,19 +677,66 @@ func scan(ctx context.Context, opts flag.Options, initializeScanner InitializeSc
 	return report, nil
 }
 
-func canonicalVersion(ver string) string {
-	if ver == devVersion {
-		return ver
-	}
-	v, err := semver.Parse(ver)
+func initMisconfScannerOption(ctx context.Context, opts flag.Options) (misconf.ScannerOption, error) {
+	ctx = log.WithContextPrefix(ctx, log.PrefixMisconfiguration)
+	log.InfoContext(ctx, "Misconfiguration scanning is enabled")
+
+	var downloadedPolicyPath string
+	var disableEmbedded bool
+
+	c, err := policy.NewClient(opts.CacheDir, opts.Quiet, opts.MisconfOptions.ChecksBundleRepository)
 	if err != nil {
-		return devVersion
+		return misconf.ScannerOption{}, xerrors.Errorf("check client error: %w", err)
 	}
-	// Replace pre-release with "dev"
-	// e.g. v0.34.0-beta1+snapshot-1
-	if v.IsPreRelease() || v.Metadata() != "" {
-		return devVersion
+
+	downloadedPolicyPath, err = operation.InitBuiltinChecks(ctx, c, opts.SkipCheckUpdate, opts.RegistryOpts())
+	if err != nil {
+		log.ErrorContext(ctx, "Falling back to embedded checks", log.Err(err))
+	} else {
+		log.DebugContext(ctx, "Checks successfully loaded from disk")
+		disableEmbedded = true
 	}
-	// Add "v" prefix and cut a patch number, "0.34.0" => "v0.34" for the url
-	return fmt.Sprintf("v%d.%d", v.Major(), v.Minor())
+
+	policyPaths := slices.Clone(opts.CheckPaths)
+	if downloadedPolicyPath != "" {
+		policyPaths = append(policyPaths, downloadedPolicyPath)
+	}
+
+	configSchemas, err := misconf.LoadConfigSchemas(opts.ConfigFileSchemas)
+	if err != nil {
+		return misconf.ScannerOption{}, xerrors.Errorf("load schemas error: %w", err)
+	}
+
+	misconfOpts := misconf.ScannerOption{
+		Trace:                    opts.Trace,
+		Namespaces:               append(opts.CheckNamespaces, rego.BuiltinNamespaces()...),
+		PolicyPaths:              policyPaths,
+		DataPaths:                opts.DataPaths,
+		HelmValues:               opts.HelmValues,
+		HelmValueFiles:           opts.HelmValueFiles,
+		HelmFileValues:           opts.HelmFileValues,
+		HelmStringValues:         opts.HelmStringValues,
+		HelmAPIVersions:          opts.HelmAPIVersions,
+		HelmKubeVersion:          opts.HelmKubeVersion,
+		TerraformTFVars:          opts.TerraformTFVars,
+		CloudFormationParamVars:  opts.CloudFormationParamVars,
+		K8sVersion:               opts.K8sVersion,
+		DisableEmbeddedPolicies:  disableEmbedded,
+		DisableEmbeddedLibraries: disableEmbedded,
+		IncludeDeprecatedChecks:  opts.IncludeDeprecatedChecks,
+		TfExcludeDownloaded:      opts.TfExcludeDownloaded,
+		RawConfigScanners:        opts.RawConfigScanners,
+		FilePatterns:             opts.FilePatterns,
+		ConfigFileSchemas:        configSchemas,
+		SkipFiles:                opts.SkipFiles,
+		SkipDirs:                 opts.SkipDirs,
+	}
+
+	regoScanner, err := misconf.InitRegoScanner(misconfOpts)
+	if err != nil {
+		return misconf.ScannerOption{}, xerrors.Errorf("init Rego scanner: %w", err)
+	}
+
+	misconfOpts.RegoScanner = regoScanner
+	return misconfOpts, nil
 }

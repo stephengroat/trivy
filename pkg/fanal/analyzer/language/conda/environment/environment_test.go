@@ -1,13 +1,14 @@
 package environment
 
 import (
-	"context"
-	"github.com/aquasecurity/trivy/pkg/fanal/analyzer"
-	"github.com/aquasecurity/trivy/pkg/fanal/types"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 	"os"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"github.com/aquasecurity/trivy/pkg/fanal/analyzer"
+	"github.com/aquasecurity/trivy/pkg/fanal/types"
 )
 
 func Test_environmentAnalyzer_Analyze(t *testing.T) {
@@ -25,7 +26,7 @@ func Test_environmentAnalyzer_Analyze(t *testing.T) {
 					{
 						Type:     types.CondaEnv,
 						FilePath: "testdata/environment.yaml",
-						Libraries: types.Packages{
+						Packages: types.Packages{
 							{
 								Name: "_libgcc_mutex",
 								Locations: []types.Location{
@@ -71,6 +72,69 @@ func Test_environmentAnalyzer_Analyze(t *testing.T) {
 			},
 		},
 		{
+			name:      "happy path with licenses",
+			inputFile: "testdata/environment-with-licenses.yaml",
+			want: &analyzer.AnalysisResult{
+				Applications: []types.Application{
+					{
+						Type:     types.CondaEnv,
+						FilePath: "testdata/environment-with-licenses.yaml",
+						Packages: types.Packages{
+							{
+								Name: "_libgcc_mutex",
+								Locations: []types.Location{
+									{
+										StartLine: 5,
+										EndLine:   5,
+									},
+								},
+							},
+							{
+								Name:    "_openmp_mutex",
+								Version: "5.1",
+								Locations: []types.Location{
+									{
+										StartLine: 6,
+										EndLine:   6,
+									},
+								},
+								Licenses: []string{
+									"BSD-3-Clause",
+								},
+							},
+							{
+								Name:    "blas",
+								Version: "1.0",
+								Locations: []types.Location{
+									{
+										StartLine: 7,
+										EndLine:   7,
+									},
+								},
+							},
+							{
+								Name:    "bzip2",
+								Version: "1.0.8",
+								Locations: []types.Location{
+									{
+										StartLine: 8,
+										EndLine:   8,
+									},
+								},
+								Licenses: []string{
+									"bzip2-1.0.8",
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+		{
+			name:      "empty",
+			inputFile: "testdata/empty.yaml",
+		},
+		{
 			name:      "invalid",
 			inputFile: "testdata/invalid.yaml",
 			wantErr:   "unable to parse environment.yaml",
@@ -83,7 +147,7 @@ func Test_environmentAnalyzer_Analyze(t *testing.T) {
 			defer f.Close()
 
 			a := environmentAnalyzer{}
-			ctx := context.Background()
+			ctx := t.Context()
 			got, err := a.Analyze(ctx, analyzer.AnalysisInput{
 				FilePath: tt.inputFile,
 				Content:  f,

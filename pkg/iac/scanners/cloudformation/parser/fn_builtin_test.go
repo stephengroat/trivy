@@ -13,14 +13,12 @@ func Test_cidr_generator(t *testing.T) {
 		ctx:     nil,
 		name:    "cidr",
 		comment: "",
-		Inner: PropertyInner{
-			Type:  "",
-			Value: nil,
-		},
+		Type:    "",
+		Value:   nil,
 	}
 
 	ranges, err := calculateCidrs("10.1.0.0/16", 4, 4, original)
-	require.Nil(t, err)
+	require.NoError(t, err)
 	require.Len(t, ranges, 4)
 
 	results := make(map[int]string)
@@ -40,14 +38,12 @@ func Test_cidr_generator_8_bits(t *testing.T) {
 		ctx:     nil,
 		name:    "cidr",
 		comment: "",
-		Inner: PropertyInner{
-			Type:  "",
-			Value: nil,
-		},
+		Type:    "",
+		Value:   nil,
 	}
 
 	ranges, err := calculateCidrs("10.1.0.0/16", 4, 8, original)
-	require.Nil(t, err)
+	require.NoError(t, err)
 	require.Len(t, ranges, 4)
 
 	results := make(map[int]string)

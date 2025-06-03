@@ -2,13 +2,14 @@ package report
 
 import (
 	"context"
-	"errors"
 	"io"
 	"strings"
 
+	"github.com/hashicorp/go-multierror"
 	"golang.org/x/xerrors"
 
 	cr "github.com/aquasecurity/trivy/pkg/compliance/report"
+	"github.com/aquasecurity/trivy/pkg/extension"
 	ftypes "github.com/aquasecurity/trivy/pkg/fanal/types"
 	"github.com/aquasecurity/trivy/pkg/flag"
 	"github.com/aquasecurity/trivy/pkg/log"
@@ -26,13 +27,18 @@ const (
 
 // Write writes the result to output, format as passed in argument
 func Write(ctx context.Context, report types.Report, option flag.Options) (err error) {
+	// Call pre-report hooks
+	if err := extension.PreReport(ctx, &report, option); err != nil {
+		return xerrors.Errorf("pre report error: %w", err)
+	}
+
 	output, cleanup, err := option.OutputWriter(ctx)
 	if err != nil {
 		return xerrors.Errorf("failed to create a file: %w", err)
 	}
 	defer func() {
 		if cerr := cleanup(); cerr != nil {
-			err = errors.Join(err, cerr)
+			err = multierror.Append(err, cerr)
 		}
 	}()
 
@@ -44,18 +50,25 @@ func Write(ctx context.Context, report types.Report, option flag.Options) (err e
 	var writer Writer
 	switch option.Format {
 	case types.FormatTable:
-		writer = &table.Writer{
+		writer = table.NewWriter(table.Options{
+			Scanners:             option.Scanners,
 			Output:               output,
 			Severities:           option.Severities,
 			Tree:                 option.DependencyTree,
 			ShowSuppressed:       option.ShowSuppressed,
 			IncludeNonFailures:   option.IncludeNonFailures,
 			Trace:                option.Trace,
+			RenderCause:          option.RenderCause,
 			LicenseRiskThreshold: option.LicenseRiskThreshold,
 			IgnoredLicenses:      option.IgnoredLicenses,
-		}
+			TableModes:           option.TableModes,
+		})
 	case types.FormatJSON:
-		writer = &JSONWriter{Output: output}
+		writer = &JSONWriter{
+			Output:         output,
+			ListAllPkgs:    option.ListAllPkgs,
+			ShowSuppressed: option.ShowSuppressed,
+		}
 	case types.FormatGitHub:
 		writer = &github.Writer{
 			Output:  output,
@@ -76,13 +89,12 @@ func Write(ctx context.Context, report types.Report, option flag.Options) (err e
 			}
 			break
 		}
-		var err error
 		if writer, err = NewTemplateWriter(output, option.Template, option.AppVersion); err != nil {
 			return xerrors.Errorf("failed to initialize template writer: %w", err)
 		}
 	case types.FormatSarif:
 		target := ""
-		if report.ArtifactType == ftypes.ArtifactFilesystem {
+		if report.ArtifactType == ftypes.TypeFilesystem {
 			target = option.Target
 		}
 		writer = &SarifWriter{
@@ -98,6 +110,11 @@ func Write(ctx context.Context, report types.Report, option flag.Options) (err e
 
 	if err = writer.Write(ctx, report); err != nil {
 		return xerrors.Errorf("failed to write results: %w", err)
+	}
+
+	// Call post-report hooks
+	if err := extension.PostReport(ctx, &report, option); err != nil {
+		return xerrors.Errorf("post report error: %w", err)
 	}
 
 	return nil

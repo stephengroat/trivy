@@ -3,10 +3,9 @@ package core
 import (
 	"sort"
 
-	"github.com/package-url/packageurl-go"
-
 	dtypes "github.com/aquasecurity/trivy-db/pkg/types"
 	"github.com/aquasecurity/trivy/pkg/digest"
+	ftypes "github.com/aquasecurity/trivy/pkg/fanal/types"
 	"github.com/aquasecurity/trivy/pkg/uuid"
 )
 
@@ -26,11 +25,12 @@ const (
 	PropertyClass         = "Class"
 
 	// Image properties
-	PropertySize       = "Size"
-	PropertyImageID    = "ImageID"
-	PropertyRepoDigest = "RepoDigest"
-	PropertyDiffID     = "DiffID"
-	PropertyRepoTag    = "RepoTag"
+	PropertySize         = "Size"
+	PropertyImageID      = "ImageID"
+	PropertyRepoDigest   = "RepoDigest"
+	PropertyDiffID       = "DiffID"
+	PropertyRepoTag      = "RepoTag"
+	PropertyLabelsPrefix = "Labels"
 
 	// Package properties
 	PropertyPkgID           = "PkgID"
@@ -48,10 +48,13 @@ const (
 	RelationshipDescribes RelationshipType = "describes"
 	RelationshipContains  RelationshipType = "contains"
 	RelationshipDependsOn RelationshipType = "depends_on"
+
+	ExternalReferenceVEX ExternalReferenceType = "external_reference_vex"
 )
 
 type ComponentType string
 type RelationshipType string
+type ExternalReferenceType string
 
 // BOM represents an intermediate representation of a component for SBOM.
 type BOM struct {
@@ -62,6 +65,10 @@ type BOM struct {
 	components    map[uuid.UUID]*Component
 	relationships map[uuid.UUID][]Relationship
 
+	// externalReferences is a list of documents that are referenced from this BOM but hosted elsewhere.
+	// They are currently used to look for linked VEX documents
+	externalReferences []ExternalReference
+
 	// Vulnerabilities is a list of vulnerabilities that affect the component.
 	// CycloneDX: vulnerabilities
 	// SPDX: N/A
@@ -70,6 +77,10 @@ type BOM struct {
 	// purls is a map of package URLs to UUIDs
 	// This is used to ensure that each package URL is only represented once in the BOM.
 	purls map[string][]uuid.UUID
+
+	// parents is a map of parent components to their children
+	// This field is populated when Options.Parents is set to true.
+	parents map[uuid.UUID][]uuid.UUID
 
 	// opts is a set of options for the BOM.
 	opts Options
@@ -124,14 +135,14 @@ type Component struct {
 	// SPDX: package.licenseConcluded, package.licenseDeclared
 	Licenses []string
 
-	// PkgID has PURL and BOMRef for the component
+	// PkgIdentifier has PURL and BOMRef for the component
 	// PURL:
 	//   CycloneDX: component.purl
 	//   SPDX: package.externalRefs.referenceLocator
 	// BOMRef:
 	//   CycloneDX: component.bom-ref
 	//   SPDX: N/A
-	PkgID PkgID
+	PkgIdentifier ftypes.PkgIdentifier
 
 	// Supplier is the name of the supplier of the component
 	// CycloneDX: component.supplier
@@ -188,15 +199,14 @@ type Relationship struct {
 	Type       RelationshipType
 }
 
-type PkgID struct {
-	PURL   *packageurl.PackageURL
-	BOMRef string
+type ExternalReference struct {
+	URL  string
+	Type ExternalReferenceType
 }
 
 type Vulnerability struct {
 	dtypes.Vulnerability
 	ID               string
-	PkgID            string
 	PkgName          string
 	InstalledVersion string
 	FixedVersion     string
@@ -205,16 +215,19 @@ type Vulnerability struct {
 }
 
 type Options struct {
-	GenerateBOMRef bool
+	GenerateBOMRef bool // Generate BOMRef for CycloneDX
+	Parents        bool // Hold parent maps
 }
 
 func NewBOM(opts Options) *BOM {
 	return &BOM{
-		components:      make(map[uuid.UUID]*Component),
-		relationships:   make(map[uuid.UUID][]Relationship),
-		vulnerabilities: make(map[uuid.UUID][]Vulnerability),
-		purls:           make(map[string][]uuid.UUID),
-		opts:            opts,
+		components:         make(map[uuid.UUID]*Component),
+		relationships:      make(map[uuid.UUID][]Relationship),
+		vulnerabilities:    make(map[uuid.UUID][]Vulnerability),
+		purls:              make(map[string][]uuid.UUID),
+		parents:            make(map[uuid.UUID][]uuid.UUID),
+		externalReferences: make([]ExternalReference, 0),
+		opts:               opts,
 	}
 }
 
@@ -222,8 +235,8 @@ func (b *BOM) setupComponent(c *Component) {
 	if c.id == uuid.Nil {
 		c.id = uuid.New()
 	}
-	if c.PkgID.PURL != nil {
-		p := c.PkgID.PURL.String()
+	if c.PkgIdentifier.PURL != nil {
+		p := c.PkgIdentifier.PURL.String()
 		b.purls[p] = append(b.purls[p], c.id)
 	}
 	sort.Sort(c.Properties)
@@ -263,6 +276,10 @@ func (b *BOM) AddRelationship(parent, child *Component, relationshipType Relatio
 		Type:       relationshipType,
 		Dependency: child.id,
 	})
+
+	if b.opts.Parents {
+		b.parents[child.id] = append(b.parents[child.id], parent.id)
+	}
 }
 
 func (b *BOM) AddVulnerabilities(c *Component, vulns []Vulnerability) {
@@ -275,13 +292,17 @@ func (b *BOM) AddVulnerabilities(c *Component, vulns []Vulnerability) {
 	b.vulnerabilities[c.id] = vulns
 }
 
+func (b *BOM) AddExternalReferences(refs []ExternalReference) {
+	b.externalReferences = append(b.externalReferences, refs...)
+}
+
 func (b *BOM) Root() *Component {
 	root, ok := b.components[b.rootID]
 	if !ok {
 		return nil
 	}
 	if b.opts.GenerateBOMRef {
-		root.PkgID.BOMRef = b.bomRef(root)
+		root.PkgIdentifier.BOMRef = b.bomRef(root)
 	}
 	return root
 }
@@ -290,7 +311,7 @@ func (b *BOM) Components() map[uuid.UUID]*Component {
 	// Fill in BOMRefs for components
 	if b.opts.GenerateBOMRef {
 		for id, c := range b.components {
-			b.components[id].PkgID.BOMRef = b.bomRef(c)
+			b.components[id].PkgIdentifier.BOMRef = b.bomRef(c)
 		}
 	}
 	return b.components
@@ -304,22 +325,26 @@ func (b *BOM) Vulnerabilities() map[uuid.UUID][]Vulnerability {
 	return b.vulnerabilities
 }
 
-func (b *BOM) NumComponents() int {
-	return len(b.components) + 1 // +1 for the root component
+func (b *BOM) ExternalReferences() []ExternalReference {
+	return b.externalReferences
+}
+
+func (b *BOM) Parents() map[uuid.UUID][]uuid.UUID {
+	return b.parents
 }
 
 // bomRef returns BOMRef for CycloneDX
 // When multiple lock files have the same dependency with the same name and version, PURL in the BOM can conflict.
 // In that case, PURL cannot be used as a unique identifier, and UUIDv4 be used for BOMRef.
 func (b *BOM) bomRef(c *Component) string {
-	if c.PkgID.BOMRef != "" {
-		return c.PkgID.BOMRef
+	if c.PkgIdentifier.BOMRef != "" {
+		return c.PkgIdentifier.BOMRef
 	}
 	// Return the UUID of the component if the PURL is not present.
-	if c.PkgID.PURL == nil {
+	if c.PkgIdentifier.PURL == nil {
 		return c.id.String()
 	}
-	p := c.PkgID.PURL.String()
+	p := c.PkgIdentifier.PURL.String()
 
 	// Return the UUID of the component if the PURL is not unique in the BOM.
 	if len(b.purls[p]) > 1 {

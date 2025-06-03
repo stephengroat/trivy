@@ -26,20 +26,22 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/xeipuuv/gojsonschema"
 
-	"github.com/aquasecurity/trivy-db/pkg/db"
 	"github.com/aquasecurity/trivy-db/pkg/metadata"
+	"github.com/aquasecurity/trivy/internal/dbtest"
+	"github.com/aquasecurity/trivy/internal/testutil"
 	"github.com/aquasecurity/trivy/pkg/clock"
 	"github.com/aquasecurity/trivy/pkg/commands"
-	"github.com/aquasecurity/trivy/pkg/dbtest"
+	"github.com/aquasecurity/trivy/pkg/db"
 	"github.com/aquasecurity/trivy/pkg/types"
 	"github.com/aquasecurity/trivy/pkg/uuid"
+	"github.com/aquasecurity/trivy/pkg/vex/repo"
 
 	_ "modernc.org/sqlite"
 )
 
 var update = flag.Bool("update", false, "update golden files")
 
-const SPDXSchema = "https://raw.githubusercontent.com/spdx/spdx-spec/development/v%s/schemas/spdx-schema.json"
+const SPDXSchema = "https://raw.githubusercontent.com/spdx/spdx-spec/support/v%s/schemas/spdx-schema.json"
 
 func initDB(t *testing.T) string {
 	fixtureDir := filepath.Join("testdata", "fixtures", "db")
@@ -55,23 +57,55 @@ func initDB(t *testing.T) string {
 	}
 
 	cacheDir := dbtest.InitDB(t, fixtures)
-	defer db.Close()
+	defer dbtest.Close()
 
-	dbDir := filepath.Dir(db.Path(cacheDir))
-
-	metadataFile := filepath.Join(dbDir, "metadata.json")
-	f, err := os.Create(metadataFile)
-	require.NoError(t, err)
-
-	err = json.NewEncoder(f).Encode(metadata.Metadata{
-		Version:    db.SchemaVersion,
-		NextUpdate: time.Now().Add(24 * time.Hour),
-		UpdatedAt:  time.Now(),
+	err = metadata.NewClient(db.Dir(cacheDir)).Update(metadata.Metadata{
+		Version:      db.SchemaVersion,
+		NextUpdate:   time.Now().Add(24 * time.Hour),
+		UpdatedAt:    time.Now(),
+		DownloadedAt: time.Now(),
 	})
 	require.NoError(t, err)
 
 	dbtest.InitJavaDB(t, cacheDir)
 	return cacheDir
+}
+
+func initVEXRepository(t *testing.T, homeDir, cacheDir string) {
+	t.Helper()
+
+	// Copy config directory
+	configSrc := "testdata/fixtures/vex/config/repository.yaml"
+	configDst := filepath.Join(homeDir, ".trivy", "vex", "repository.yaml")
+	testutil.CopyFile(t, configSrc, configDst)
+
+	// Copy repository directory
+	repoSrc := "testdata/fixtures/vex/repositories"
+	repoDst := filepath.Join(cacheDir, "vex", "repositories")
+	testutil.CopyDir(t, repoSrc, repoDst)
+
+	// Copy VEX file
+	vexSrc := "testdata/fixtures/vex/file/openvex.json"
+	repoDir := filepath.Join(repoDst, "default")
+	vexDst := filepath.Join(repoDir, "0.1", "openvex.json")
+	testutil.CopyFile(t, vexSrc, vexDst)
+
+	// Write a dummy cache metadata
+	testutil.MustWriteJSON(t, filepath.Join(repoDir, "cache.json"), repo.CacheMetadata{
+		UpdatedAt: time.Now(),
+	})
+
+	// Verify that necessary files exist
+	requiredFiles := []string{
+		configDst,
+		filepath.Join(repoDir, "vex-repository.json"),
+		filepath.Join(repoDir, "0.1", "index.json"),
+		filepath.Join(repoDir, "0.1", "openvex.json"),
+	}
+
+	for _, file := range requiredFiles {
+		require.FileExists(t, file)
+	}
 }
 
 func getFreePort() (int, error) {
@@ -120,6 +154,9 @@ func readReport(t *testing.T, filePath string) types.Report {
 	// We don't compare repo tags because the archive doesn't support it
 	report.Metadata.RepoTags = nil
 	report.Metadata.RepoDigests = nil
+	for i := range report.Metadata.Layers {
+		report.Metadata.Layers[i].Digest = ""
+	}
 
 	for i, result := range report.Results {
 		for j := range result.Vulnerabilities {
@@ -153,7 +190,6 @@ func readCycloneDX(t *testing.T, filePath string) *cdx.BOM {
 			return (*bom.Components)[i].Name < (*bom.Components)[j].Name
 		})
 		for i := range *bom.Components {
-			(*bom.Components)[i].BOMRef = ""
 			sort.Slice(*(*bom.Components)[i].Properties, func(ii, jj int) bool {
 				return (*(*bom.Components)[i].Properties)[ii].Name < (*(*bom.Components)[i].Properties)[jj].Name
 			})
@@ -269,6 +305,7 @@ func compareReports(t *testing.T, wantFile, gotFile string, override func(t *tes
 	if override != nil {
 		override(t, &want, &got)
 	}
+
 	assert.Equal(t, want, got)
 }
 
@@ -289,7 +326,7 @@ func compareSPDXJson(t *testing.T, wantFile, gotFile string) {
 	SPDXVersion, ok := strings.CutPrefix(want.SPDXVersion, "SPDX-")
 	assert.True(t, ok)
 
-	assert.NoError(t, spdxlib.ValidateDocument(got))
+	require.NoError(t, spdxlib.ValidateDocument(got))
 
 	// Validate SPDX output against the JSON schema
 	validateReport(t, fmt.Sprintf(SPDXSchema, SPDXVersion), got)

@@ -1,14 +1,15 @@
 package flag_test
 
 import (
-	"github.com/aquasecurity/trivy/pkg/log"
-	"github.com/stretchr/testify/require"
 	"net/http"
 	"testing"
 
-	"github.com/aquasecurity/trivy/pkg/flag"
 	"github.com/spf13/viper"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"github.com/aquasecurity/trivy/pkg/flag"
+	"github.com/aquasecurity/trivy/pkg/log"
 )
 
 func TestRemoteFlagGroup_ToOptions(t *testing.T) {
@@ -109,9 +110,10 @@ func TestRemoteFlagGroup_ToOptions(t *testing.T) {
 				Token:         flag.ServerTokenFlag.Clone(),
 				TokenHeader:   flag.ServerTokenHeaderFlag.Clone(),
 			}
-			got, err := f.ToOptions()
+			flags := flag.Flags{f}
+			got, err := flags.ToOptions(nil)
 			require.NoError(t, err)
-			assert.Equalf(t, tt.want, got, "ToOptions()")
+			assert.Equal(t, tt.want, got.RemoteOptions)
 
 			// Assert log messages
 			assert.Equal(t, tt.wantLogs, out.Messages(), tt.name)

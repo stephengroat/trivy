@@ -1,18 +1,21 @@
 package flag
 
 import (
+	"slices"
 	"strings"
 
 	"github.com/mattn/go-shellwords"
 	"github.com/samber/lo"
-	"golang.org/x/exp/slices"
+	"github.com/spf13/viper"
 	"golang.org/x/xerrors"
 
 	dbTypes "github.com/aquasecurity/trivy-db/pkg/types"
+	"github.com/aquasecurity/trivy/pkg/cache"
 	"github.com/aquasecurity/trivy/pkg/compliance/spec"
 	"github.com/aquasecurity/trivy/pkg/log"
 	"github.com/aquasecurity/trivy/pkg/result"
 	"github.com/aquasecurity/trivy/pkg/types"
+	"github.com/aquasecurity/trivy/pkg/utils/fsutils"
 	xstrings "github.com/aquasecurity/trivy/pkg/x/strings"
 )
 
@@ -54,7 +57,7 @@ var (
 	ListAllPkgsFlag = Flag[bool]{
 		Name:       "list-all-pkgs",
 		ConfigName: "list-all-pkgs",
-		Usage:      "enabling the option will output all packages regardless of vulnerability",
+		Usage:      "output all packages in the JSON report regardless of vulnerability",
 	}
 	IgnoreFileFlag = Flag[string]{
 		Name:       "ignorefile",
@@ -106,6 +109,13 @@ var (
 		ConfigName: "scan.show-suppressed",
 		Usage:      "[EXPERIMENTAL] show suppressed vulnerabilities",
 	}
+	TableModeFlag = Flag[[]string]{
+		Name:       "table-mode",
+		ConfigName: "table-mode",
+		Default:    xstrings.ToStringSlice(types.SupportedTableModes),
+		Values:     xstrings.ToStringSlice(types.SupportedTableModes),
+		Usage:      "[EXPERIMENTAL] tables that will be displayed in 'table' format",
+	}
 )
 
 // ReportFlagGroup composes common printer flag structs
@@ -125,6 +135,7 @@ type ReportFlagGroup struct {
 	Severity        *Flag[[]string]
 	Compliance      *Flag[string]
 	ShowSuppressed  *Flag[bool]
+	TableMode       *Flag[[]string]
 }
 
 type ReportOptions struct {
@@ -142,6 +153,7 @@ type ReportOptions struct {
 	Severities       []dbTypes.Severity
 	Compliance       spec.ComplianceSpec
 	ShowSuppressed   bool
+	TableModes       []types.TableMode
 }
 
 func NewReportFlagGroup() *ReportFlagGroup {
@@ -160,6 +172,7 @@ func NewReportFlagGroup() *ReportFlagGroup {
 		Severity:        SeverityFlag.Clone(),
 		Compliance:      ComplianceFlag.Clone(),
 		ShowSuppressed:  ShowSuppressedFlag.Clone(),
+		TableMode:       TableModeFlag.Clone(),
 	}
 }
 
@@ -183,18 +196,16 @@ func (f *ReportFlagGroup) Flags() []Flagger {
 		f.Severity,
 		f.Compliance,
 		f.ShowSuppressed,
+		f.TableMode,
 	}
 }
 
-func (f *ReportFlagGroup) ToOptions() (ReportOptions, error) {
-	if err := parseFlags(f); err != nil {
-		return ReportOptions{}, err
-	}
-
+func (f *ReportFlagGroup) ToOptions(opts *Options) error {
 	format := types.Format(f.Format.Value())
 	template := f.Template.Value()
 	dependencyTree := f.DependencyTree.Value()
 	listAllPkgs := f.ListAllPkgs.Value()
+	tableModes := f.TableMode.Value()
 
 	if template != "" {
 		if format == "" {
@@ -208,10 +219,10 @@ func (f *ReportFlagGroup) ToOptions() (ReportOptions, error) {
 		}
 	}
 
-	// "--list-all-pkgs" option is unavailable with "--format table".
-	// If user specifies "--list-all-pkgs" with "--format table", we should warn it.
-	if listAllPkgs && format == types.FormatTable {
-		log.Warn(`"--list-all-pkgs" cannot be used with "--format table". Try "--format json" or other formats.`)
+	// "--list-all-pkgs" option is unavailable with other than "--format json".
+	// If user specifies "--list-all-pkgs" with "--format table" or other formats, we should warn it.
+	if listAllPkgs && format != types.FormatJSON {
+		log.Warn(`"--list-all-pkgs" is only valid for the JSON format, for other formats a list of packages is automatically included.`)
 	}
 
 	// "--dependency-tree" option is available only with "--format table".
@@ -224,25 +235,29 @@ func (f *ReportFlagGroup) ToOptions() (ReportOptions, error) {
 		}
 	}
 
-	// Enable '--list-all-pkgs' if needed
-	if f.forceListAllPkgs(format, listAllPkgs, dependencyTree) {
-		listAllPkgs = true
+	// "--table-mode" option is available only with "--format table".
+	if viper.IsSet(TableModeFlag.ConfigName) && format != types.FormatTable {
+		return xerrors.New(`"--table-mode" can be used only with "--format table".`)
 	}
 
 	cs, err := loadComplianceTypes(f.Compliance.Value())
 	if err != nil {
-		return ReportOptions{}, xerrors.Errorf("unable to load compliance spec: %w", err)
+		return xerrors.Errorf("unable to load compliance spec: %w", err)
 	}
 
 	var outputPluginArgs []string
 	if arg := f.OutputPluginArg.Value(); arg != "" {
 		outputPluginArgs, err = shellwords.Parse(arg)
 		if err != nil {
-			return ReportOptions{}, xerrors.Errorf("unable to parse output plugin argument: %w", err)
+			return xerrors.Errorf("unable to parse output plugin argument: %w", err)
 		}
 	}
 
-	return ReportOptions{
+	if viper.IsSet(f.IgnoreFile.ConfigName) && !fsutils.FileExists(f.IgnoreFile.Value()) {
+		return xerrors.Errorf("ignore file not found: %s", f.IgnoreFile.Value())
+	}
+
+	opts.ReportOptions = ReportOptions{
 		Format:           format,
 		ReportFormat:     f.ReportFormat.Value(),
 		Template:         template,
@@ -257,7 +272,9 @@ func (f *ReportFlagGroup) ToOptions() (ReportOptions, error) {
 		Severities:       toSeverity(f.Severity.Value()),
 		Compliance:       cs,
 		ShowSuppressed:   f.ShowSuppressed.Value(),
-	}, nil
+		TableModes:       xstrings.ToTSlice[types.TableMode](tableModes),
+	}
+	return nil
 }
 
 func loadComplianceTypes(compliance string) (spec.ComplianceSpec, error) {
@@ -265,29 +282,12 @@ func loadComplianceTypes(compliance string) (spec.ComplianceSpec, error) {
 		return spec.ComplianceSpec{}, xerrors.Errorf("unknown compliance : %v", compliance)
 	}
 
-	cs, err := spec.GetComplianceSpec(compliance)
+	cs, err := spec.GetComplianceSpec(compliance, cache.DefaultDir())
 	if err != nil {
 		return spec.ComplianceSpec{}, xerrors.Errorf("spec loading from file system error: %w", err)
 	}
 
 	return cs, nil
-}
-
-func (f *ReportFlagGroup) forceListAllPkgs(format types.Format, listAllPkgs, dependencyTree bool) bool {
-	if slices.Contains(types.SupportedSBOMFormats, format) && !listAllPkgs {
-		log.Debugf("%q automatically enables '--list-all-pkgs'.", types.SupportedSBOMFormats)
-		return true
-	}
-	// We need this flag to insert dependency locations into Sarif('Package' struct contains 'Locations')
-	if format == types.FormatSarif && !listAllPkgs {
-		log.Debug("Sarif format automatically enables '--list-all-pkgs' to get locations")
-		return true
-	}
-	if dependencyTree && !listAllPkgs {
-		log.Debug("'--dependency-tree' enables '--list-all-pkgs'.")
-		return true
-	}
-	return false
 }
 
 func toSeverity(severity []string) []dbTypes.Severity {

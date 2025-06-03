@@ -4,7 +4,6 @@ import (
 	"encoding/xml"
 	"fmt"
 	"io"
-	"maps"
 	"net/url"
 	"reflect"
 	"strings"
@@ -13,8 +12,10 @@ import (
 	"golang.org/x/xerrors"
 
 	"github.com/aquasecurity/trivy/pkg/dependency/parser/utils"
-	"github.com/aquasecurity/trivy/pkg/dependency/types"
+	ftypes "github.com/aquasecurity/trivy/pkg/fanal/types"
 	"github.com/aquasecurity/trivy/pkg/log"
+	"github.com/aquasecurity/trivy/pkg/set"
+	"github.com/aquasecurity/trivy/pkg/x/slices"
 )
 
 type pom struct {
@@ -22,11 +23,18 @@ type pom struct {
 	content  *pomXML
 }
 
-func (p *pom) inherit(result analysisResult) {
-	// Merge properties
-	p.content.Properties = utils.MergeMaps(result.properties, p.content.Properties)
+func (p *pom) nil() bool {
+	return p == nil || p.content == nil
+}
 
-	art := p.artifact().Inherit(result.artifact)
+func (p *pom) inherit(parent *pom) {
+	if parent == nil {
+		return
+	}
+	// Merge properties
+	p.content.Properties = utils.MergeMaps(parent.properties(), p.content.Properties)
+
+	art := p.artifact().Inherit(parent.artifact())
 
 	p.content.GroupId = art.GroupID
 	p.content.ArtifactId = art.ArtifactID
@@ -39,12 +47,12 @@ func (p *pom) inherit(result analysisResult) {
 	}
 }
 
-func (p pom) properties() properties {
+func (p *pom) properties() properties {
 	props := p.content.Properties
 	return utils.MergeMaps(props, p.projectProperties())
 }
 
-func (p pom) projectProperties() map[string]string {
+func (p *pom) projectProperties() map[string]string {
 	val := reflect.ValueOf(p.content).Elem()
 	props := p.listProperties(val)
 
@@ -72,7 +80,7 @@ func (p pom) projectProperties() map[string]string {
 	return projectProperties
 }
 
-func (p pom) listProperties(val reflect.Value) map[string]string {
+func (p *pom) listProperties(val reflect.Value) map[string]string {
 	props := make(map[string]string)
 	for i := 0; i < val.NumField(); i++ {
 		f := val.Type().Field(i)
@@ -105,17 +113,17 @@ func (p pom) listProperties(val reflect.Value) map[string]string {
 	return props
 }
 
-func (p pom) artifact() artifact {
+func (p *pom) artifact() artifact {
 	return newArtifact(p.content.GroupId, p.content.ArtifactId, p.content.Version, p.licenses(), p.content.Properties)
 }
 
-func (p pom) licenses() []string {
-	return lo.FilterMap(p.content.Licenses.License, func(lic pomLicense, _ int) (string, bool) {
+func (p *pom) licenses() []string {
+	return slices.ZeroToNil(lo.FilterMap(p.content.Licenses.License, func(lic pomLicense, _ int) (string, bool) {
 		return lic.Name, lic.Name != ""
-	})
+	}))
 }
 
-func (p pom) repositories(servers []Server) ([]string, []string) {
+func (p *pom) repositories(servers []Server) ([]string, []string) {
 	logger := log.WithPrefix("pom")
 	var releaseRepos, snapshotRepos []string
 	for _, rep := range p.content.Repositories.Repository {
@@ -237,13 +245,15 @@ func (d pomDependency) Resolve(props map[string]string, depManagement, rootDepMa
 
 	// If this dependency is managed in the root POM,
 	// we need to overwrite fields according to the managed dependency.
-	if managed, found := findDep(d.Name(), rootDepManagement); found { // dependencyManagement from the root POM
+	if managed, found := findDep(dep.Name(), rootDepManagement); found { // dependencyManagement from the root POM
 		if managed.Version != "" {
 			dep.Version = evaluateVariable(managed.Version, props, nil)
 		}
+
 		if managed.Scope != "" {
 			dep.Scope = evaluateVariable(managed.Scope, props, nil)
 		}
+
 		if managed.Optional {
 			dep.Optional = managed.Optional
 		}
@@ -254,7 +264,7 @@ func (d pomDependency) Resolve(props map[string]string, depManagement, rootDepMa
 	}
 
 	// Inherit version, scope and optional from dependencyManagement if empty
-	if managed, found := findDep(d.Name(), depManagement); found { // dependencyManagement from parent
+	if managed, found := findDep(dep.Name(), depManagement); found { // dependencyManagement from parent
 		if dep.Version == "" {
 			dep.Version = evaluateVariable(managed.Version, props, nil)
 		}
@@ -265,9 +275,8 @@ func (d pomDependency) Resolve(props map[string]string, depManagement, rootDepMa
 		if !dep.Optional {
 			dep.Optional = managed.Optional
 		}
-		if len(dep.Exclusions.Exclusion) == 0 {
-			dep.Exclusions = managed.Exclusions
-		}
+		// `mvn` always merges exceptions for pom and parent
+		dep.Exclusions.Exclusion = append(dep.Exclusions.Exclusion, managed.Exclusions.Exclusion...)
 	}
 	return dep
 }
@@ -278,17 +287,17 @@ func (d pomDependency) ToArtifact(opts analysisOptions) artifact {
 	// To avoid shadow adding exclusions to top pom's,
 	// we need to initialize a new map for each new artifact
 	// See `exclusions in child` test for more information
-	exclusions := make(map[string]struct{})
+	exclusions := set.New[string]()
 	if opts.exclusions != nil {
-		exclusions = maps.Clone(opts.exclusions)
+		exclusions = opts.exclusions.Clone()
 	}
 	for _, e := range d.Exclusions.Exclusion {
-		exclusions[fmt.Sprintf("%s:%s", e.GroupID, e.ArtifactID)] = struct{}{}
+		exclusions.Append(fmt.Sprintf("%s:%s", e.GroupID, e.ArtifactID))
 	}
 
-	var locations types.Locations
-	if opts.lineNumber {
-		locations = types.Locations{
+	var locations ftypes.Locations
+	if d.StartLine != 0 && d.EndLine != 0 {
+		locations = ftypes.Locations{
 			{
 				StartLine: d.StartLine,
 				EndLine:   d.EndLine,
@@ -302,7 +311,7 @@ func (d pomDependency) ToArtifact(opts analysisOptions) artifact {
 		Version:      newVersion(d.Version),
 		Exclusions:   exclusions,
 		Locations:    locations,
-		Relationship: types.RelationshipIndirect, // default
+		Relationship: ftypes.RelationshipIndirect, // default
 	}
 }
 

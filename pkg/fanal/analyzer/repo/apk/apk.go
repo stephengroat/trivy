@@ -5,8 +5,8 @@ import (
 	"context"
 	"os"
 	"regexp"
+	"slices"
 
-	"golang.org/x/exp/slices"
 	"golang.org/x/xerrors"
 
 	ver "github.com/aquasecurity/go-version/pkg/version"
@@ -95,4 +95,8 @@ func (a apkRepoAnalyzer) Type() analyzer.Type {
 
 func (a apkRepoAnalyzer) Version() int {
 	return version
+}
+
+func (a apkRepoAnalyzer) StaticPaths() []string {
+	return requiredFiles
 }

@@ -4,8 +4,8 @@ import (
 	"bufio"
 	"context"
 	"os"
+	"slices"
 
-	"golang.org/x/exp/slices"
 	"golang.org/x/xerrors"
 
 	"github.com/aquasecurity/trivy/pkg/fanal/analyzer"
@@ -47,4 +47,9 @@ func (a alpineOSAnalyzer) Type() analyzer.Type {
 
 func (a alpineOSAnalyzer) Version() int {
 	return version
+}
+
+// StaticPaths returns the static paths of the alpine analyzer
+func (a alpineOSAnalyzer) StaticPaths() []string {
+	return requiredFiles
 }

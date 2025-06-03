@@ -1,16 +1,19 @@
 package flag_test
 
 import (
-	"github.com/aquasecurity/trivy/pkg/log"
 	"testing"
+
+	"github.com/spf13/viper"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	dbTypes "github.com/aquasecurity/trivy-db/pkg/types"
 	"github.com/aquasecurity/trivy/pkg/compliance/spec"
 	"github.com/aquasecurity/trivy/pkg/flag"
 	iacTypes "github.com/aquasecurity/trivy/pkg/iac/types"
+	"github.com/aquasecurity/trivy/pkg/log"
 	"github.com/aquasecurity/trivy/pkg/types"
-	"github.com/spf13/viper"
-	"github.com/stretchr/testify/assert"
+	xstrings "github.com/aquasecurity/trivy/pkg/x/strings"
 )
 
 func TestReportFlagGroup_ToOptions(t *testing.T) {
@@ -29,11 +32,14 @@ func TestReportFlagGroup_ToOptions(t *testing.T) {
 		severities       string
 		compliance       string
 		debug            bool
+		pkgTypes         string
+		tableModes       []string
 	}
 	tests := []struct {
 		name     string
 		fields   fields
 		want     flag.ReportOptions
+		wantErr  string
 		wantLogs []string
 	}{
 		{
@@ -44,34 +50,12 @@ func TestReportFlagGroup_ToOptions(t *testing.T) {
 		{
 			name: "happy path with an cyclonedx",
 			fields: fields{
-				severities:  "CRITICAL",
-				format:      "cyclonedx",
-				listAllPkgs: true,
+				severities: "CRITICAL",
+				format:     "cyclonedx",
 			},
 			want: flag.ReportOptions{
-				Severities:  []dbTypes.Severity{dbTypes.SeverityCritical},
-				Format:      types.FormatCycloneDX,
-				ListAllPkgs: true,
-			},
-		},
-		{
-			name: "happy path with an cyclonedx option list-all-pkgs is false",
-			fields: fields{
-				severities:  "CRITICAL",
-				format:      "cyclonedx",
-				listAllPkgs: false,
-				debug:       true,
-			},
-			wantLogs: []string{
-				`["cyclonedx" "spdx" "spdx-json" "github"] automatically enables '--list-all-pkgs'.`,
-				`Parsed severities	severities=[CRITICAL]`,
-			},
-			want: flag.ReportOptions{
-				Severities: []dbTypes.Severity{
-					dbTypes.SeverityCritical,
-				},
-				Format:      types.FormatCycloneDX,
-				ListAllPkgs: true,
+				Severities: []dbTypes.Severity{dbTypes.SeverityCritical},
+				Format:     types.FormatCycloneDX,
 			},
 		},
 		{
@@ -126,7 +110,7 @@ func TestReportFlagGroup_ToOptions(t *testing.T) {
 				listAllPkgs: true,
 			},
 			wantLogs: []string{
-				`"--list-all-pkgs" cannot be used with "--format table". Try "--format json" or other formats.`,
+				`"--list-all-pkgs" is only valid for the JSON format, for other formats a list of packages is automatically included.`,
 			},
 			want: flag.ReportOptions{
 				Format:      "table",
@@ -179,6 +163,14 @@ func TestReportFlagGroup_ToOptions(t *testing.T) {
 				Severities: []dbTypes.Severity{dbTypes.SeverityLow},
 			},
 		},
+		{
+			name: "invalid option combination: --table-modes with --format json",
+			fields: fields{
+				format:     "json",
+				tableModes: xstrings.ToStringSlice(types.SupportedTableModes),
+			},
+			wantErr: `"--table-mode" can be used only with "--format table".`,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -203,6 +195,7 @@ func TestReportFlagGroup_ToOptions(t *testing.T) {
 			setValue(flag.OutputPluginArgFlag.ConfigName, tt.fields.outputPluginArgs)
 			setValue(flag.SeverityFlag.ConfigName, tt.fields.severities)
 			setValue(flag.ComplianceFlag.ConfigName, tt.fields.compliance)
+			setSliceValue(flag.TableModeFlag.ConfigName, tt.fields.tableModes)
 
 			// Assert options
 			f := &flag.ReportFlagGroup{
@@ -218,14 +211,33 @@ func TestReportFlagGroup_ToOptions(t *testing.T) {
 				OutputPluginArg: flag.OutputPluginArgFlag.Clone(),
 				Severity:        flag.SeverityFlag.Clone(),
 				Compliance:      flag.ComplianceFlag.Clone(),
+				TableMode:       flag.TableModeFlag.Clone(),
 			}
 
-			got, err := f.ToOptions()
-			assert.NoError(t, err)
-			assert.Equalf(t, tt.want, got, "ToOptions()")
+			flags := flag.Flags{f}
+			got, err := flags.ToOptions(nil)
+			if tt.wantErr != "" {
+				require.ErrorContains(t, err, tt.wantErr)
+				return
+			}
+
+			assert.EqualExportedValues(t, tt.want, got.ReportOptions)
 
 			// Assert log messages
 			assert.Equal(t, tt.wantLogs, out.Messages(), tt.name)
 		})
 	}
+
+	t.Run("Error on non existing ignore file", func(t *testing.T) {
+		t.Cleanup(viper.Reset)
+
+		setValue(flag.IgnoreFileFlag.ConfigName, "doesntexist")
+		f := &flag.ReportFlagGroup{
+			IgnoreFile: flag.IgnoreFileFlag.Clone(),
+		}
+
+		flags := flag.Flags{f}
+		_, err := flags.ToOptions(nil)
+		assert.ErrorContains(t, err, "ignore file not found: doesntexist")
+	})
 }

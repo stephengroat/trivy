@@ -3,14 +3,13 @@ package dynamodb
 import (
 	"testing"
 
-	"github.com/aquasecurity/trivy/internal/testutil"
-	"github.com/aquasecurity/trivy/pkg/iac/adapters/terraform/tftestutil"
-	iacTypes "github.com/aquasecurity/trivy/pkg/iac/types"
-
-	"github.com/aquasecurity/trivy/pkg/iac/providers/aws/dynamodb"
-
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/aquasecurity/trivy/internal/testutil"
+	"github.com/aquasecurity/trivy/pkg/iac/adapters/terraform/tftestutil"
+	"github.com/aquasecurity/trivy/pkg/iac/providers/aws/dynamodb"
+	iacTypes "github.com/aquasecurity/trivy/pkg/iac/types"
 )
 
 func Test_adaptCluster(t *testing.T) {
@@ -95,7 +94,7 @@ func Test_adaptTable(t *testing.T) {
 				ServerSideEncryption: dynamodb.ServerSideEncryption{
 					Metadata: iacTypes.NewTestMetadata(),
 					Enabled:  iacTypes.Bool(true, iacTypes.NewTestMetadata()),
-					KMSKeyID: iacTypes.String("alias/aws/dynamodb", iacTypes.NewTestMetadata()),
+					KMSKeyID: iacTypes.String(dynamodb.DefaultKMSKeyID, iacTypes.NewTestMetadata()),
 				},
 				PointInTimeRecovery: iacTypes.Bool(false, iacTypes.NewTestMetadata()),
 			},
@@ -154,7 +153,7 @@ func TestLines(t *testing.T) {
 	modules := tftestutil.CreateModulesFromSource(t, src, ".tf")
 	adapted := Adapt(modules)
 
-	require.Len(t, adapted.DAXClusters, 0)
+	require.Empty(t, adapted.DAXClusters)
 	require.Len(t, adapted.Tables, 1)
 	table := adapted.Tables[0]
 

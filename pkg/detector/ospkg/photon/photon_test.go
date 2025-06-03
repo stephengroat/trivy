@@ -1,20 +1,20 @@
 package photon_test
 
 import (
-	"context"
-	"github.com/aquasecurity/trivy/pkg/clock"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/aquasecurity/trivy-db/pkg/db"
 	dbTypes "github.com/aquasecurity/trivy-db/pkg/types"
 	"github.com/aquasecurity/trivy-db/pkg/vulnsrc/vulnerability"
-	"github.com/aquasecurity/trivy/pkg/dbtest"
+	"github.com/aquasecurity/trivy/internal/dbtest"
+	"github.com/aquasecurity/trivy/pkg/clock"
 	"github.com/aquasecurity/trivy/pkg/detector/ospkg/photon"
 	ftypes "github.com/aquasecurity/trivy/pkg/fanal/types"
 	"github.com/aquasecurity/trivy/pkg/types"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 func TestScanner_Detect(t *testing.T) {
@@ -85,7 +85,7 @@ func TestScanner_Detect(t *testing.T) {
 					},
 				},
 			},
-			wantErr: "failed to get Photon advisories",
+			wantErr: "failed to get Photon Linux advisory",
 		},
 	}
 	for _, tt := range tests {
@@ -94,13 +94,12 @@ func TestScanner_Detect(t *testing.T) {
 			defer db.Close()
 
 			s := photon.NewScanner()
-			got, err := s.Detect(nil, tt.args.osVer, nil, tt.args.pkgs)
+			got, err := s.Detect(t.Context(), tt.args.osVer, nil, tt.args.pkgs)
 			if tt.wantErr != "" {
-				require.Error(t, err)
-				assert.Contains(t, err.Error(), tt.wantErr)
+				require.ErrorContains(t, err, tt.wantErr)
 				return
 			}
-			assert.NoError(t, err)
+			require.NoError(t, err)
 			assert.Equal(t, tt.want, got)
 		})
 	}
@@ -147,7 +146,7 @@ func TestScanner_IsSupportedVersion(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			ctx := clock.With(context.Background(), tt.now)
+			ctx := clock.With(t.Context(), tt.now)
 			s := photon.NewScanner()
 			got := s.IsSupportedVersion(ctx, tt.args.osFamily, tt.args.osVer)
 			assert.Equal(t, tt.want, got)

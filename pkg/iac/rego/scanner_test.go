@@ -1,8 +1,8 @@
-package rego
+package rego_test
 
 import (
 	"bytes"
-	"context"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -10,13 +10,14 @@ import (
 	"testing"
 	"testing/fstest"
 
-	"github.com/aquasecurity/trivy/pkg/iac/severity"
-	"github.com/aquasecurity/trivy/pkg/iac/types"
 	"github.com/liamg/memoryfs"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/aquasecurity/trivy/pkg/iac/rego"
 	"github.com/aquasecurity/trivy/pkg/iac/scanners/options"
+	"github.com/aquasecurity/trivy/pkg/iac/severity"
+	"github.com/aquasecurity/trivy/pkg/iac/types"
 )
 
 func CreateFS(t *testing.T, files map[string]string) fs.FS {
@@ -35,6 +36,21 @@ func Test_RegoScanning_Deny(t *testing.T) {
 
 	srcFS := CreateFS(t, map[string]string{
 		"policies/test.rego": `
+# METADATA
+# title: Custom policy
+# description: Custom policy for testing
+# scope: package
+# schemas:
+#   - input: schema["input"]
+# custom:
+#   id: AVD-BAR-0001
+#   avd_id: AVD-BAR-0001
+#   provider: custom
+#   service: custom
+#   severity: LOW
+#   short_code: custom-policy
+#   recommended_action: Custom policy for testing
+
 package defsec.test
 
 deny {
@@ -43,100 +59,91 @@ deny {
 `,
 	})
 
-	scanner := NewScanner(types.SourceJSON)
-	require.NoError(
-		t,
-		scanner.LoadPolicies(false, false, srcFS, []string{"policies"}, nil),
+	scanner := rego.NewScanner(
+		rego.WithPolicyDirs("policies"),
 	)
+	require.NoError(t, scanner.LoadPolicies(srcFS))
 
-	results, err := scanner.ScanInput(context.TODO(), Input{
+	results, err := scanner.ScanInput(t.Context(), types.SourceJSON, rego.Input{
 		Path: "/evil.lol",
-		Contents: map[string]interface{}{
+		Contents: map[string]any{
 			"evil": true,
 		},
 		FS: srcFS,
 	})
 	require.NoError(t, err)
 
-	require.Equal(t, 1, len(results.GetFailed()))
-	assert.Equal(t, 0, len(results.GetPassed()))
-	assert.Equal(t, 0, len(results.GetIgnored()))
+	require.Len(t, results.GetFailed(), 1)
+	assert.Empty(t, results.GetPassed())
+	assert.Empty(t, results.GetIgnored())
 
 	assert.Equal(t, "/evil.lol", results.GetFailed()[0].Metadata().Range().GetFilename())
-	assert.False(t, results.GetFailed()[0].IsWarning())
 }
 
 func Test_RegoScanning_AbsolutePolicyPath_Deny(t *testing.T) {
 
 	tmp := t.TempDir()
-	require.NoError(t, os.Mkdir(filepath.Join(tmp, "policies"), 0755))
-	require.NoError(t, os.WriteFile(filepath.Join(tmp, "policies", "test.rego"), []byte(`package defsec.test
+	require.NoError(t, os.Mkdir(filepath.Join(tmp, "policies"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(tmp, "policies", "test.rego"), []byte(`# METADATA
+# title: Custom policy
+# description: Custom policy for testing
+# scope: package
+# schemas:
+#   - input: schema["input"]
+# custom:
+#   id: AVD-BAR-0001
+#   avd_id: AVD-BAR-0001
+#   provider: custom
+#   service: custom
+#   severity: LOW
+#   short_code: custom-policy
+#   recommended_action: Custom policy for testing
+package defsec.test
 
 deny {
     input.evil
-}`), 0600))
+}`), 0o600))
 
 	srcFS := os.DirFS(tmp)
 
-	scanner := NewScanner(types.SourceJSON)
-	require.NoError(
-		t,
-		scanner.LoadPolicies(false, false, srcFS, []string{"/policies"}, nil),
+	scanner := rego.NewScanner(
+		rego.WithPolicyDirs("policies"),
 	)
+	require.NoError(t, scanner.LoadPolicies(srcFS))
 
-	results, err := scanner.ScanInput(context.TODO(), Input{
+	results, err := scanner.ScanInput(t.Context(), types.SourceJSON, rego.Input{
 		Path: "/evil.lol",
-		Contents: map[string]interface{}{
+		Contents: map[string]any{
 			"evil": true,
 		},
 		FS: srcFS,
 	})
 	require.NoError(t, err)
 
-	require.Equal(t, 1, len(results.GetFailed()))
-	assert.Equal(t, 0, len(results.GetPassed()))
-	assert.Equal(t, 0, len(results.GetIgnored()))
+	require.Len(t, results.GetFailed(), 1)
+	assert.Empty(t, results.GetPassed())
+	assert.Empty(t, results.GetIgnored())
 
 	assert.Equal(t, "/evil.lol", results.GetFailed()[0].Metadata().Range().GetFilename())
-	assert.False(t, results.GetFailed()[0].IsWarning())
-}
-
-func Test_RegoScanning_Warn(t *testing.T) {
-
-	srcFS := CreateFS(t, map[string]string{
-		"policies/test.rego": `
-package defsec.test
-
-warn {
-    input.evil
-}
-`,
-	})
-
-	scanner := NewScanner(types.SourceJSON)
-	require.NoError(
-		t,
-		scanner.LoadPolicies(false, false, srcFS, []string{"policies"}, nil),
-	)
-
-	results, err := scanner.ScanInput(context.TODO(), Input{
-		Path: "/evil.lol",
-		Contents: map[string]interface{}{
-			"evil": true,
-		},
-	})
-	require.NoError(t, err)
-
-	require.Equal(t, 1, len(results.GetFailed()))
-	require.Equal(t, 0, len(results.GetPassed()))
-	require.Equal(t, 0, len(results.GetIgnored()))
-
-	assert.True(t, results.GetFailed()[0].IsWarning())
 }
 
 func Test_RegoScanning_Allow(t *testing.T) {
 	srcFS := CreateFS(t, map[string]string{
-		"policies/test.rego": `
+		"policies/test.rego": `# METADATA
+# title: Custom policy
+# description: Custom policy for testing
+# scope: package
+# schemas:
+#   - input: schema["input"]
+# custom:
+#   id: AVD-BAR-0001
+#   avd_id: AVD-BAR-0001
+#   provider: custom
+#   service: custom
+#   severity: LOW
+#   short_code: custom-policy
+#   recommended_action: Custom policy for testing
+
 package defsec.test
 
 deny {
@@ -145,195 +152,46 @@ deny {
 `,
 	})
 
-	scanner := NewScanner(types.SourceJSON)
-	require.NoError(
-		t,
-		scanner.LoadPolicies(false, false, srcFS, []string{"policies"}, nil),
+	scanner := rego.NewScanner(
+		rego.WithPolicyDirs("policies"),
 	)
+	require.NoError(t, scanner.LoadPolicies(srcFS))
 
-	results, err := scanner.ScanInput(context.TODO(), Input{
+	results, err := scanner.ScanInput(t.Context(), types.SourceJSON, rego.Input{
 		Path: "/evil.lol",
-		Contents: map[string]interface{}{
+		Contents: map[string]any{
 			"evil": false,
 		},
 	})
 	require.NoError(t, err)
 
-	assert.Equal(t, 0, len(results.GetFailed()))
-	require.Equal(t, 1, len(results.GetPassed()))
-	assert.Equal(t, 0, len(results.GetIgnored()))
+	assert.Empty(t, results.GetFailed())
+	require.Len(t, results.GetPassed(), 1)
+	assert.Empty(t, results.GetIgnored())
 
 	assert.Equal(t, "/evil.lol", results.GetPassed()[0].Metadata().Range().GetFilename())
 }
 
-func Test_RegoScanning_Namespace_Exception(t *testing.T) {
-
-	srcFS := CreateFS(t, map[string]string{
-		"policies/test.rego": `
-package defsec.test
-
-deny {
-    input.evil
-}
-`,
-		"policies/exceptions.rego": `
-package namespace.exceptions
-
-import data.namespaces
-
-exception[ns] {
-    ns := data.namespaces[_]
-    startswith(ns, "defsec")
-}
-`,
-	})
-
-	scanner := NewScanner(types.SourceJSON)
-	require.NoError(
-		t,
-		scanner.LoadPolicies(false, false, srcFS, []string{"policies"}, nil),
-	)
-
-	results, err := scanner.ScanInput(context.TODO(), Input{
-		Path: "/evil.lol",
-		Contents: map[string]interface{}{
-			"evil": true,
-		},
-	})
-	require.NoError(t, err)
-
-	assert.Equal(t, 0, len(results.GetFailed()))
-	assert.Equal(t, 0, len(results.GetPassed()))
-	assert.Equal(t, 1, len(results.GetIgnored()))
-
-}
-
-func Test_RegoScanning_Namespace_Exception_WithoutMatch(t *testing.T) {
-
-	srcFS := CreateFS(t, map[string]string{
-		"policies/test.rego": `
-package defsec.test
-
-deny {
-    input.evil
-}
-`, "policies/something.rego": `
-package builtin.test
-
-deny_something {
-    input.something
-}
-`,
-		"policies/exceptions.rego": `
-package namespace.exceptions
-
-import data.namespaces
-
-exception[ns] {
-    ns := data.namespaces[_]
-    startswith(ns, "builtin")
-}
-`,
-	})
-
-	scanner := NewScanner(types.SourceJSON)
-	require.NoError(
-		t,
-		scanner.LoadPolicies(false, false, srcFS, []string{"policies"}, nil),
-	)
-
-	results, err := scanner.ScanInput(context.TODO(), Input{
-		Path: "/evil.lol",
-		Contents: map[string]interface{}{
-			"evil": true,
-		},
-	})
-	require.NoError(t, err)
-
-	assert.Equal(t, 1, len(results.GetFailed()))
-	assert.Equal(t, 0, len(results.GetPassed()))
-	assert.Equal(t, 1, len(results.GetIgnored()))
-
-}
-
-func Test_RegoScanning_Rule_Exception(t *testing.T) {
-	srcFS := CreateFS(t, map[string]string{
-		"policies/test.rego": `
-package defsec.test
-deny_evil {
-    input.evil
-}
-`,
-		"policies/exceptions.rego": `
-package defsec.test
-
-exception[rules] {
-    rules := ["evil"]
-}
-`,
-	})
-
-	scanner := NewScanner(types.SourceJSON)
-	require.NoError(
-		t,
-		scanner.LoadPolicies(false, false, srcFS, []string{"policies"}, nil),
-	)
-
-	results, err := scanner.ScanInput(context.TODO(), Input{
-		Path: "/evil.lol",
-		Contents: map[string]interface{}{
-			"evil": true,
-		},
-	})
-	require.NoError(t, err)
-
-	assert.Equal(t, 0, len(results.GetFailed()))
-	assert.Equal(t, 0, len(results.GetPassed()))
-	assert.Equal(t, 1, len(results.GetIgnored()))
-}
-
-func Test_RegoScanning_Rule_Exception_WithoutMatch(t *testing.T) {
-	srcFS := CreateFS(t, map[string]string{
-		"policies/test.rego": `
-package defsec.test
-deny_evil {
-    input.evil
-}
-`,
-		"policies/exceptions.rego": `
-package defsec.test
-
-exception[rules] {
-    rules := ["good"]
-}
-`,
-	})
-
-	scanner := NewScanner(types.SourceJSON)
-	require.NoError(
-		t,
-		scanner.LoadPolicies(false, false, srcFS, []string{"policies"}, nil),
-	)
-
-	results, err := scanner.ScanInput(context.TODO(), Input{
-		Path: "/evil.lol",
-		Contents: map[string]interface{}{
-			"evil": true,
-		},
-	})
-	require.NoError(t, err)
-
-	assert.Equal(t, 1, len(results.GetFailed()))
-	assert.Equal(t, 0, len(results.GetPassed()))
-	assert.Equal(t, 0, len(results.GetIgnored()))
-}
-
 func Test_RegoScanning_WithRuntimeValues(t *testing.T) {
 
-	_ = os.Setenv("DEFSEC_RUNTIME_VAL", "AOK")
+	t.Setenv("DEFSEC_RUNTIME_VAL", "AOK")
 
 	srcFS := CreateFS(t, map[string]string{
-		"policies/test.rego": `
+		"policies/test.rego": `# METADATA
+# title: Custom policy
+# description: Custom policy for testing
+# scope: package
+# schemas:
+#   - input: schema["input"]
+# custom:
+#   id: AVD-BAR-0001
+#   avd_id: AVD-BAR-0001
+#   provider: custom
+#   service: custom
+#   severity: LOW
+#   short_code: custom-policy
+#   recommended_action: Custom policy for testing
+
 package defsec.test
 
 deny_evil {
@@ -343,28 +201,41 @@ deny_evil {
 `,
 	})
 
-	scanner := NewScanner(types.SourceJSON)
-	require.NoError(
-		t,
-		scanner.LoadPolicies(false, false, srcFS, []string{"policies"}, nil),
+	scanner := rego.NewScanner(
+		rego.WithPolicyDirs("policies"),
 	)
+	require.NoError(t, scanner.LoadPolicies(srcFS))
 
-	results, err := scanner.ScanInput(context.TODO(), Input{
+	results, err := scanner.ScanInput(t.Context(), types.SourceJSON, rego.Input{
 		Path: "/evil.lol",
-		Contents: map[string]interface{}{
+		Contents: map[string]any{
 			"evil": true,
 		},
 	})
 	require.NoError(t, err)
 
-	assert.Equal(t, 1, len(results.GetFailed()))
-	assert.Equal(t, 0, len(results.GetPassed()))
-	assert.Equal(t, 0, len(results.GetIgnored()))
+	assert.Len(t, results.GetFailed(), 1)
+	assert.Empty(t, results.GetPassed())
+	assert.Empty(t, results.GetIgnored())
 }
 
 func Test_RegoScanning_WithDenyMessage(t *testing.T) {
 	srcFS := CreateFS(t, map[string]string{
-		"policies/test.rego": `
+		"policies/test.rego": `# METADATA
+# title: Custom policy
+# description: Custom policy for testing
+# scope: package
+# schemas:
+#   - input: schema["input"]
+# custom:
+#   id: AVD-BAR-0001
+#   avd_id: AVD-BAR-0001
+#   provider: custom
+#   service: custom
+#   severity: LOW
+#   short_code: custom-policy
+#   recommended_action: Custom policy for testing
+
 package defsec.test
 
 deny[msg] {
@@ -374,23 +245,22 @@ deny[msg] {
 `,
 	})
 
-	scanner := NewScanner(types.SourceJSON)
-	require.NoError(
-		t,
-		scanner.LoadPolicies(false, false, srcFS, []string{"policies"}, nil),
+	scanner := rego.NewScanner(
+		rego.WithPolicyDirs("policies"),
 	)
+	require.NoError(t, scanner.LoadPolicies(srcFS))
 
-	results, err := scanner.ScanInput(context.TODO(), Input{
+	results, err := scanner.ScanInput(t.Context(), types.SourceJSON, rego.Input{
 		Path: "/evil.lol",
-		Contents: map[string]interface{}{
+		Contents: map[string]any{
 			"evil": true,
 		},
 	})
 	require.NoError(t, err)
 
-	require.Equal(t, 1, len(results.GetFailed()))
-	assert.Equal(t, 0, len(results.GetPassed()))
-	assert.Equal(t, 0, len(results.GetIgnored()))
+	require.Len(t, results.GetFailed(), 1)
+	assert.Empty(t, results.GetPassed())
+	assert.Empty(t, results.GetIgnored())
 
 	assert.Equal(t, "oh no", results.GetFailed()[0].Description())
 	assert.Equal(t, "/evil.lol", results.GetFailed()[0].Metadata().Range().GetFilename())
@@ -399,6 +269,21 @@ deny[msg] {
 func Test_RegoScanning_WithDenyMetadata_ImpliedPath(t *testing.T) {
 	srcFS := CreateFS(t, map[string]string{
 		"policies/test.rego": `
+# METADATA
+# title: Custom policy
+# description: Custom policy for testing
+# scope: package
+# schemas:
+#   - input: schema["input"]
+# custom:
+#   id: AVD-BAR-0001
+#   avd_id: AVD-BAR-0001
+#   provider: custom
+#   service: custom
+#   severity: LOW
+#   short_code: custom-policy
+#   recommended_action: Custom policy for testing
+
 package defsec.test
 
 deny[res] {
@@ -412,23 +297,22 @@ deny[res] {
 `,
 	})
 
-	scanner := NewScanner(types.SourceJSON)
-	require.NoError(
-		t,
-		scanner.LoadPolicies(false, false, srcFS, []string{"policies"}, nil),
+	scanner := rego.NewScanner(
+		rego.WithPolicyDirs("policies"),
 	)
+	require.NoError(t, scanner.LoadPolicies(srcFS))
 
-	results, err := scanner.ScanInput(context.TODO(), Input{
+	results, err := scanner.ScanInput(t.Context(), types.SourceJSON, rego.Input{
 		Path: "/evil.lol",
-		Contents: map[string]interface{}{
+		Contents: map[string]any{
 			"evil": true,
 		},
 	})
 	require.NoError(t, err)
 
-	require.Equal(t, 1, len(results.GetFailed()))
-	assert.Equal(t, 0, len(results.GetPassed()))
-	assert.Equal(t, 0, len(results.GetIgnored()))
+	require.Len(t, results.GetFailed(), 1)
+	assert.Empty(t, results.GetPassed())
+	assert.Empty(t, results.GetIgnored())
 
 	assert.Equal(t, "oh no", results.GetFailed()[0].Description())
 	assert.Equal(t, "/evil.lol", results.GetFailed()[0].Metadata().Range().GetFilename())
@@ -440,6 +324,21 @@ deny[res] {
 func Test_RegoScanning_WithDenyMetadata_PersistedPath(t *testing.T) {
 	srcFS := CreateFS(t, map[string]string{
 		"policies/test.rego": `
+# METADATA
+# title: Custom policy
+# description: Custom policy for testing
+# scope: package
+# schemas:
+#   - input: schema["input"]
+# custom:
+#   id: AVD-BAR-0001
+#   avd_id: AVD-BAR-0001
+#   provider: custom
+#   service: custom
+#   severity: LOW
+#   short_code: custom-policy
+#   recommended_action: Custom policy for testing
+
 package defsec.test
 
 deny[res] {
@@ -454,23 +353,22 @@ deny[res] {
 `,
 	})
 
-	scanner := NewScanner(types.SourceJSON)
-	require.NoError(
-		t,
-		scanner.LoadPolicies(false, false, srcFS, []string{"policies"}, nil),
+	scanner := rego.NewScanner(
+		rego.WithPolicyDirs("policies"),
 	)
+	require.NoError(t, scanner.LoadPolicies(srcFS))
 
-	results, err := scanner.ScanInput(context.TODO(), Input{
+	results, err := scanner.ScanInput(t.Context(), types.SourceJSON, rego.Input{
 		Path: "/evil.lol",
-		Contents: map[string]interface{}{
+		Contents: map[string]any{
 			"evil": true,
 		},
 	})
 	require.NoError(t, err)
 
-	require.Equal(t, 1, len(results.GetFailed()))
-	assert.Equal(t, 0, len(results.GetPassed()))
-	assert.Equal(t, 0, len(results.GetIgnored()))
+	require.Len(t, results.GetFailed(), 1)
+	assert.Empty(t, results.GetPassed())
+	assert.Empty(t, results.GetIgnored())
 
 	assert.Equal(t, "oh no", results.GetFailed()[0].Description())
 	assert.Equal(t, "/blah.txt", results.GetFailed()[0].Metadata().Range().GetFilename())
@@ -508,23 +406,22 @@ deny[res] {
 `,
 	})
 
-	scanner := NewScanner(types.SourceJSON)
-	require.NoError(
-		t,
-		scanner.LoadPolicies(false, false, srcFS, []string{"policies"}, nil),
+	scanner := rego.NewScanner(
+		rego.WithPolicyDirs("policies"),
 	)
+	require.NoError(t, scanner.LoadPolicies(srcFS))
 
-	results, err := scanner.ScanInput(context.TODO(), Input{
+	results, err := scanner.ScanInput(t.Context(), types.SourceJSON, rego.Input{
 		Path: "/evil.lol",
-		Contents: map[string]interface{}{
+		Contents: map[string]any{
 			"evil": true,
 		},
 	})
 	require.NoError(t, err)
 
-	require.Equal(t, 1, len(results.GetFailed()))
-	assert.Equal(t, 0, len(results.GetPassed()))
-	assert.Equal(t, 0, len(results.GetIgnored()))
+	require.Len(t, results.GetFailed(), 1)
+	assert.Empty(t, results.GetPassed())
+	assert.Empty(t, results.GetIgnored())
 
 	failure := results.GetFailed()[0]
 
@@ -543,7 +440,21 @@ deny[res] {
 
 func Test_RegoScanning_WithMatchingInputSelector(t *testing.T) {
 	srcFS := CreateFS(t, map[string]string{
-		"policies/test.rego": `
+		"policies/test.rego": `# METADATA
+# title: Custom policy
+# description: Custom policy for testing
+# scope: package
+# schemas:
+#   - input: schema["input"]
+# custom:
+#   id: AVD-BAR-0001
+#   avd_id: AVD-BAR-0001
+#   provider: custom
+#   service: custom
+#   severity: LOW
+#   short_code: custom-policy
+#   recommended_action: Custom policy for testing
+
 package defsec.test
 
 __rego_input__ := {
@@ -557,23 +468,22 @@ deny {
 `,
 	})
 
-	scanner := NewScanner(types.SourceJSON)
-	require.NoError(
-		t,
-		scanner.LoadPolicies(false, false, srcFS, []string{"policies"}, nil),
+	scanner := rego.NewScanner(
+		rego.WithPolicyDirs("policies"),
 	)
+	require.NoError(t, scanner.LoadPolicies(srcFS))
 
-	results, err := scanner.ScanInput(context.TODO(), Input{
+	results, err := scanner.ScanInput(t.Context(), types.SourceJSON, rego.Input{
 		Path: "/evil.lol",
-		Contents: map[string]interface{}{
+		Contents: map[string]any{
 			"evil": true,
 		},
 	})
 	require.NoError(t, err)
 
-	assert.Equal(t, 1, len(results.GetFailed()))
-	assert.Equal(t, 0, len(results.GetPassed()))
-	assert.Equal(t, 0, len(results.GetIgnored()))
+	assert.Len(t, results.GetFailed(), 1)
+	assert.Empty(t, results.GetPassed())
+	assert.Empty(t, results.GetIgnored())
 }
 
 func Test_RegoScanning_WithNonMatchingInputSelector(t *testing.T) {
@@ -591,29 +501,42 @@ deny {
 `,
 	})
 
-	scanner := NewScanner(types.SourceJSON)
-	require.NoError(
-		t,
-		scanner.LoadPolicies(false, false, srcFS, []string{"policies"}, nil),
+	scanner := rego.NewScanner(
+		rego.WithPolicyDirs("policies"),
 	)
+	require.NoError(t, scanner.LoadPolicies(srcFS))
 
-	results, err := scanner.ScanInput(context.TODO(), Input{
+	results, err := scanner.ScanInput(t.Context(), types.SourceJSON, rego.Input{
 		Path: "/evil.lol",
-		Contents: map[string]interface{}{
+		Contents: map[string]any{
 			"evil": true,
 		},
 	})
 	require.NoError(t, err)
 
-	assert.Equal(t, 0, len(results.GetFailed()))
-	assert.Equal(t, 0, len(results.GetPassed()))
-	assert.Equal(t, 0, len(results.GetIgnored()))
+	assert.Empty(t, results.GetFailed())
+	assert.Empty(t, results.GetPassed())
+	assert.Empty(t, results.GetIgnored())
 }
 
 func Test_RegoScanning_NoTracingByDefault(t *testing.T) {
 
 	srcFS := CreateFS(t, map[string]string{
-		"policies/test.rego": `
+		"policies/test.rego": `# METADATA
+# title: Custom policy
+# description: Custom policy for testing
+# scope: package
+# schemas:
+#   - input: schema["input"]
+# custom:
+#   id: AVD-BAR-0001
+#   avd_id: AVD-BAR-0001
+#   provider: custom
+#   service: custom
+#   severity: LOW
+#   short_code: custom-policy
+#   recommended_action: Custom policy for testing
+
 package defsec.test
 
 deny {
@@ -622,31 +545,44 @@ deny {
 `,
 	})
 
-	scanner := NewScanner(types.SourceJSON)
-	require.NoError(
-		t,
-		scanner.LoadPolicies(false, false, srcFS, []string{"policies"}, nil),
+	scanner := rego.NewScanner(
+		rego.WithPolicyDirs("policies"),
 	)
+	require.NoError(t, scanner.LoadPolicies(srcFS))
 
-	results, err := scanner.ScanInput(context.TODO(), Input{
+	results, err := scanner.ScanInput(t.Context(), types.SourceJSON, rego.Input{
 		Path: "/evil.lol",
-		Contents: map[string]interface{}{
+		Contents: map[string]any{
 			"evil": true,
 		},
 	})
 	require.NoError(t, err)
 
-	assert.Equal(t, 1, len(results.GetFailed()))
-	assert.Equal(t, 0, len(results.GetPassed()))
-	assert.Equal(t, 0, len(results.GetIgnored()))
+	assert.Len(t, results.GetFailed(), 1)
+	assert.Empty(t, results.GetPassed())
+	assert.Empty(t, results.GetIgnored())
 
-	assert.Len(t, results.GetFailed()[0].Traces(), 0)
+	assert.Empty(t, results.GetFailed()[0].Traces())
 }
 
 func Test_RegoScanning_GlobalTracingEnabled(t *testing.T) {
 
 	srcFS := CreateFS(t, map[string]string{
-		"policies/test.rego": `
+		"policies/test.rego": `# METADATA
+# title: Custom policy
+# description: Custom policy for testing
+# scope: package
+# schemas:
+#   - input: schema["input"]
+# custom:
+#   id: AVD-BAR-0001
+#   avd_id: AVD-BAR-0001
+#   provider: custom
+#   service: custom
+#   severity: LOW
+#   short_code: custom-policy
+#   recommended_action: Custom policy for testing
+
 package defsec.test
 
 deny {
@@ -657,32 +593,45 @@ deny {
 
 	traceBuffer := bytes.NewBuffer([]byte{})
 
-	scanner := NewScanner(types.SourceJSON, options.ScannerWithTrace(traceBuffer))
-	require.NoError(
-		t,
-		scanner.LoadPolicies(false, false, srcFS, []string{"policies"}, nil),
+	scanner := rego.NewScanner(
+		rego.WithTrace(traceBuffer),
+		rego.WithPolicyDirs("policies"),
 	)
+	require.NoError(t, scanner.LoadPolicies(srcFS))
 
-	results, err := scanner.ScanInput(context.TODO(), Input{
+	results, err := scanner.ScanInput(t.Context(), types.SourceJSON, rego.Input{
 		Path: "/evil.lol",
-		Contents: map[string]interface{}{
+		Contents: map[string]any{
 			"evil": true,
 		},
 	})
 	require.NoError(t, err)
 
-	assert.Equal(t, 1, len(results.GetFailed()))
-	assert.Equal(t, 0, len(results.GetPassed()))
-	assert.Equal(t, 0, len(results.GetIgnored()))
+	assert.Len(t, results.GetFailed(), 1)
+	assert.Empty(t, results.GetPassed())
+	assert.Empty(t, results.GetIgnored())
 
-	assert.Len(t, results.GetFailed()[0].Traces(), 0)
-	assert.Greater(t, len(traceBuffer.Bytes()), 0)
+	assert.Empty(t, results.GetFailed()[0].Traces())
+	assert.NotEmpty(t, traceBuffer.Bytes())
 }
 
 func Test_RegoScanning_PerResultTracingEnabled(t *testing.T) {
 
 	srcFS := CreateFS(t, map[string]string{
-		"policies/test.rego": `
+		"policies/test.rego": `# METADATA
+# title: Custom policy
+# description: Custom policy for testing
+# scope: package
+# schemas:
+#   - input: schema["input"]
+# custom:
+#   id: AVD-BAR-0001
+#   avd_id: AVD-BAR-0001
+#   provider: custom
+#   service: custom
+#   severity: LOW
+#   short_code: custom-policy
+#   recommended_action: Custom policy for testing
 package defsec.test
 
 deny {
@@ -691,25 +640,25 @@ deny {
 `,
 	})
 
-	scanner := NewScanner(types.SourceJSON, options.ScannerWithPerResultTracing(true))
-	require.NoError(
-		t,
-		scanner.LoadPolicies(false, false, srcFS, []string{"policies"}, nil),
+	scanner := rego.NewScanner(
+		rego.WithPerResultTracing(true),
+		rego.WithPolicyDirs("policies"),
 	)
+	require.NoError(t, scanner.LoadPolicies(srcFS))
 
-	results, err := scanner.ScanInput(context.TODO(), Input{
+	results, err := scanner.ScanInput(t.Context(), types.SourceJSON, rego.Input{
 		Path: "/evil.lol",
-		Contents: map[string]interface{}{
+		Contents: map[string]any{
 			"evil": true,
 		},
 	})
 	require.NoError(t, err)
 
-	assert.Equal(t, 1, len(results.GetFailed()))
-	assert.Equal(t, 0, len(results.GetPassed()))
-	assert.Equal(t, 0, len(results.GetIgnored()))
+	assert.Len(t, results.GetFailed(), 1)
+	assert.Empty(t, results.GetPassed())
+	assert.Empty(t, results.GetIgnored())
 
-	assert.Greater(t, len(results.GetFailed()[0].Traces()), 0)
+	assert.NotEmpty(t, results.GetFailed()[0].Traces())
 }
 
 func Test_dynamicMetadata(t *testing.T) {
@@ -729,20 +678,19 @@ deny {
 `,
 	})
 
-	scanner := NewScanner(types.SourceJSON)
-	require.NoError(
-		t,
-		scanner.LoadPolicies(false, false, srcFS, []string{"policies"}, nil),
+	scanner := rego.NewScanner(
+		rego.WithPolicyDirs("policies"),
 	)
+	require.NoError(t, scanner.LoadPolicies(srcFS))
 
-	results, err := scanner.ScanInput(context.TODO(), Input{
+	results, err := scanner.ScanInput(t.Context(), types.SourceJSON, rego.Input{
 		Path: "/evil.lol",
-		Contents: map[string]interface{}{
+		Contents: map[string]any{
 			"text": "dynamic",
 		},
 	})
 	require.NoError(t, err)
-	assert.Equal(t, results[0].Rule().Summary, "i am dynamic")
+	assert.Equal(t, "i am dynamic", results[0].Rule().Summary)
 }
 
 func Test_staticMetadata(t *testing.T) {
@@ -762,20 +710,19 @@ deny {
 `,
 	})
 
-	scanner := NewScanner(types.SourceJSON)
-	require.NoError(
-		t,
-		scanner.LoadPolicies(false, false, srcFS, []string{"policies"}, nil),
+	scanner := rego.NewScanner(
+		rego.WithPolicyDirs("policies"),
 	)
+	require.NoError(t, scanner.LoadPolicies(srcFS))
 
-	results, err := scanner.ScanInput(context.TODO(), Input{
+	results, err := scanner.ScanInput(t.Context(), types.SourceJSON, rego.Input{
 		Path: "/evil.lol",
-		Contents: map[string]interface{}{
+		Contents: map[string]any{
 			"text": "test",
 		},
 	})
 	require.NoError(t, err)
-	assert.Equal(t, results[0].Rule().Summary, "i am static")
+	assert.Equal(t, "i am static", results[0].Rule().Summary)
 }
 
 func Test_annotationMetadata(t *testing.T) {
@@ -809,15 +756,15 @@ deny {
 `,
 	})
 
-	scanner := NewScanner(types.SourceJSON)
-	require.NoError(
-		t,
-		scanner.LoadPolicies(false, false, srcFS, []string{"policies"}, nil),
+	scanner := rego.NewScanner(
+		rego.WithPerResultTracing(true),
+		rego.WithPolicyDirs("policies"),
 	)
+	require.NoError(t, scanner.LoadPolicies(srcFS))
 
-	results, err := scanner.ScanInput(context.TODO(), Input{
+	results, err := scanner.ScanInput(t.Context(), types.SourceJSON, rego.Input{
 		Path: "/evil.lol",
-		Contents: map[string]interface{}{
+		Contents: map[string]any{
 			"text": "test",
 		},
 	})
@@ -847,13 +794,10 @@ deny {
 `,
 	})
 
-	scanner := NewScanner(types.SourceDockerfile)
-	scanner.SetRegoErrorLimit(0) // override to not allow any errors
-	assert.ErrorContains(
-		t,
-		scanner.LoadPolicies(false, false, srcFS, []string{"policies"}, nil),
-		"undefined ref: input.evil",
+	scanner := rego.NewScanner(
+		rego.WithPolicyDirs("policies"),
 	)
+	require.NoError(t, scanner.LoadPolicies(srcFS))
 }
 
 func Test_RegoScanning_WithValidInputSchema(t *testing.T) {
@@ -870,11 +814,10 @@ deny {
 `,
 	})
 
-	scanner := NewScanner(types.SourceDockerfile)
-	assert.NoError(
-		t,
-		scanner.LoadPolicies(false, false, srcFS, []string{"policies"}, nil),
+	scanner := rego.NewScanner(
+		rego.WithPolicyDirs("policies"),
 	)
+	require.NoError(t, scanner.LoadPolicies(srcFS))
 }
 
 func Test_RegoScanning_WithFilepathToSchema(t *testing.T) {
@@ -889,18 +832,36 @@ deny {
 }
 `,
 	})
-	scanner := NewScanner(types.SourceJSON)
-	scanner.SetRegoErrorLimit(0) // override to not allow any errors
+
+	scanner := rego.NewScanner(
+		rego.WithRegoErrorLimits(0),
+		rego.WithPolicyDirs("policies"),
+	)
+
 	assert.ErrorContains(
 		t,
-		scanner.LoadPolicies(false, false, srcFS, []string{"policies"}, nil),
+		scanner.LoadPolicies(srcFS),
 		"undefined ref: input.evil",
 	)
 }
 
 func Test_RegoScanning_CustomData(t *testing.T) {
 	srcFS := CreateFS(t, map[string]string{
-		"policies/test.rego": `
+		"policies/test.rego": `# METADATA
+# title: Custom policy
+# description: Custom policy for testing
+# scope: package
+# schemas:
+#   - input: schema["input"]
+# custom:
+#   id: AVD-BAR-0001
+#   avd_id: AVD-BAR-0001
+#   provider: custom
+#   service: custom
+#   severity: LOW
+#   short_code: custom-policy
+#   recommended_action: Custom policy for testing
+
 package defsec.test
 import data.settings.DS123.foo_bar_baz
 
@@ -921,26 +882,39 @@ deny {
 		"data/junk.txt": "this file should be ignored",
 	})
 
-	scanner := NewScanner(types.SourceJSON)
-	scanner.SetDataFilesystem(dataFS)
-	scanner.SetDataDirs(".")
-
-	require.NoError(
-		t,
-		scanner.LoadPolicies(false, false, srcFS, []string{"policies"}, nil),
+	scanner := rego.NewScanner(
+		rego.WithDataFilesystem(dataFS),
+		rego.WithDataDirs("."),
+		rego.WithPolicyDirs("policies"),
 	)
 
-	results, err := scanner.ScanInput(context.TODO(), Input{})
+	require.NoError(t, scanner.LoadPolicies(srcFS))
+
+	results, err := scanner.ScanInput(t.Context(), types.SourceJSON, rego.Input{})
 	require.NoError(t, err)
 
-	assert.Equal(t, 1, len(results.GetFailed()))
-	assert.Equal(t, 0, len(results.GetPassed()))
-	assert.Equal(t, 0, len(results.GetIgnored()))
+	assert.Len(t, results.GetFailed(), 1)
+	assert.Empty(t, results.GetPassed())
+	assert.Empty(t, results.GetIgnored())
 }
 
 func Test_RegoScanning_InvalidFS(t *testing.T) {
 	srcFS := CreateFS(t, map[string]string{
-		"policies/test.rego": `
+		"policies/test.rego": `# METADATA
+# title: Custom policy
+# description: Custom policy for testing
+# scope: package
+# schemas:
+#   - input: schema["input"]
+# custom:
+#   id: AVD-BAR-0001
+#   avd_id: AVD-BAR-0001
+#   provider: custom
+#   service: custom
+#   severity: LOW
+#   short_code: custom-policy
+#   recommended_action: Custom policy for testing
+
 package defsec.test
 import data.settings.DS123.foo_bar_baz
 
@@ -961,21 +935,20 @@ deny {
 		"data/junk.txt": "this file should be ignored",
 	})
 
-	scanner := NewScanner(types.SourceJSON)
-	scanner.SetDataFilesystem(dataFS)
-	scanner.SetDataDirs("X://")
-
-	require.NoError(
-		t,
-		scanner.LoadPolicies(false, false, srcFS, []string{"policies"}, nil),
+	scanner := rego.NewScanner(
+		rego.WithDataFilesystem(dataFS),
+		rego.WithDataDirs("X://"),
+		rego.WithPolicyDirs("policies"),
 	)
 
-	results, err := scanner.ScanInput(context.TODO(), Input{})
+	require.NoError(t, scanner.LoadPolicies(srcFS))
+
+	results, err := scanner.ScanInput(t.Context(), types.SourceJSON, rego.Input{})
 	require.NoError(t, err)
 
-	assert.Equal(t, 1, len(results.GetFailed()))
-	assert.Equal(t, 0, len(results.GetPassed()))
-	assert.Equal(t, 0, len(results.GetIgnored()))
+	assert.Len(t, results.GetFailed(), 1)
+	assert.Empty(t, results.GetPassed())
+	assert.Empty(t, results.GetIgnored())
 }
 
 func Test_NoErrorsWhenUsingBadRegoCheck(t *testing.T) {
@@ -997,17 +970,223 @@ deny {
 		},
 	}
 
-	var buf bytes.Buffer
-	scanner := NewScanner(
-		types.SourceYAML,
-		options.ScannerWithDebug(&buf),
+	scanner := rego.NewScanner(
+		rego.WithPolicyDirs("checks"),
 	)
-	require.NoError(
-		t,
-		scanner.LoadPolicies(false, false, fsys, []string{"checks"}, nil),
-	)
-	_, err := scanner.ScanInput(context.TODO(), Input{})
-	assert.NoError(t, err)
-	assert.Contains(t, buf.String(),
-		`Error occurred while applying rule "deny" from check "checks/bad.rego"`)
+	require.NoError(t, scanner.LoadPolicies(fsys))
+	_, err := scanner.ScanInput(t.Context(), types.SourceYAML, rego.Input{})
+	require.NoError(t, err)
+}
+
+func Test_RegoScanning_WithDeprecatedCheck(t *testing.T) {
+
+	check := `# METADATA
+# title: i am a deprecated check
+# description: i am a description
+# related_resources:
+# - https://google.com
+# custom:
+#   id: EG123
+#   avd_id: AVD-EG-0123
+#   severity: LOW
+#   recommended_action: have a cup of tea
+#   deprecated: %v
+package defsec.test
+
+deny {
+  input.text
+}`
+
+	var testCases = []struct {
+		name            string
+		policy          string
+		opts            []options.ScannerOption
+		expectedResults int
+	}{
+		{
+			name:            "deprecated check is skipped by default",
+			policy:          fmt.Sprintf(check, true),
+			expectedResults: 0,
+		},
+		{
+			name:            "non-deprecated check is executed",
+			policy:          fmt.Sprintf(check, false),
+			expectedResults: 1,
+		},
+		{
+			name:            "deprecated check is executed when includeDeprecatedChecks is true",
+			policy:          fmt.Sprintf(check, true),
+			opts:            []options.ScannerOption{rego.WithIncludeDeprecatedChecks(true)},
+			expectedResults: 1,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			opts := append(tc.opts, rego.WithPolicyReader(strings.NewReader(tc.policy)))
+			scanner := rego.NewScanner(opts...)
+			require.NoError(t, scanner.LoadPolicies(nil))
+
+			results, err := scanner.ScanInput(t.Context(), types.SourceJSON, rego.Input{
+				Path: "/evil.lol",
+				Contents: map[string]any{
+					"text": "test",
+				},
+			})
+			require.NoError(t, err)
+			require.Len(t, results, tc.expectedResults, tc.name)
+		})
+	}
+}
+
+func Test_RegoScanner_WithCustomSchemas(t *testing.T) {
+
+	schema := `{
+  "$id": "https://example.com/test.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "service": { "type": "string" }
+  },
+  "required": ["service"]
+}`
+
+	tests := []struct {
+		name            string
+		check           string
+		expectedResults int
+	}{
+		{
+			name: "happy path",
+			check: `# METADATA
+# title: test check
+# schemas:
+# - input: schema["test"]
+package user.test
+
+deny {
+	input.service == "test"
+}
+`,
+			expectedResults: 1,
+		},
+		{
+			name: "sad path",
+			check: `# METADATA
+# title: test check
+# schemas:
+# - input: schema["test"]
+package user.test
+
+deny {
+	input.other == "test"
+}
+`,
+			expectedResults: 0,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			scanner := rego.NewScanner(
+				rego.WithCustomSchemas(map[string][]byte{
+					"test": []byte(schema),
+				}),
+				rego.WithPolicyNamespaces("user"),
+				rego.WithPolicyReader(strings.NewReader(tc.check)),
+			)
+
+			require.NoError(t, scanner.LoadPolicies(nil))
+
+			results, err := scanner.ScanInput(t.Context(), types.SourceYAML, rego.Input{
+				Path:     "test.yaml",
+				Contents: map[string]any{"service": "test"},
+			})
+			require.NoError(t, err)
+			require.Len(t, results, tc.expectedResults, tc.name)
+		})
+	}
+}
+
+func Test_RegoScanner_WithDisabledCheckIDs(t *testing.T) {
+
+	check := `# METADATA
+# custom:
+#   id: TEST-001
+#   avd_id: AVD-TEST-001
+#   severity: LOW
+#   provider: aws
+#   service: s3
+#   short_code: test
+package builtin.test
+
+deny {
+  true
+}
+`
+
+	tests := []struct {
+		name           string
+		disabledChecks []string
+		inputCheck     string
+		expected       bool
+	}{
+		{
+			name:       "no disabled checks",
+			expected:   true,
+			inputCheck: check,
+		},
+		{
+			name:           "disable check by ID",
+			disabledChecks: []string{"TEST-001"},
+			inputCheck:     check,
+		},
+		{
+			name:           "disabling a non-existent check",
+			disabledChecks: []string{"FOO"},
+			expected:       true,
+			inputCheck:     check,
+		},
+		{
+			name:           "one of the identifiers does not exist",
+			disabledChecks: []string{"FOO", "TEST-001"},
+			inputCheck:     check,
+		},
+		{
+			name: "do not disable user checks with builtin IDs",
+			inputCheck: `# METADATA
+# custom:
+#   id: TEST-001
+#   avd_id: AVD-TEST-001
+#   severity: LOW
+#   provider: aws
+#   service: s3
+#   short_code: test
+package user.test
+
+deny {
+  true
+}
+`,
+			disabledChecks: []string{"TEST-001"},
+			expected:       true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+
+			scanner := rego.NewScanner(
+				rego.WithPolicyReader(strings.NewReader(tt.inputCheck)),
+				rego.WithDisabledCheckIDs(tt.disabledChecks...),
+				rego.WithPolicyNamespaces("user"),
+			)
+
+			require.NoError(t, scanner.LoadPolicies(nil))
+			results, err := scanner.ScanInput(t.Context(), types.SourceYAML, rego.Input{})
+			require.NoError(t, err)
+
+			require.Equal(t, tt.expected, len(results.GetFailed()) > 0)
+		})
+	}
 }

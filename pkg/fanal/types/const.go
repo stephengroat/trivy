@@ -24,55 +24,78 @@ const (
 	Alma               OSType = "alma"
 	Alpine             OSType = "alpine"
 	Amazon             OSType = "amazon"
+	Azure              OSType = "azurelinux"
+	Bottlerocket       OSType = "bottlerocket"
 	CBLMariner         OSType = "cbl-mariner"
 	CentOS             OSType = "centos"
 	Chainguard         OSType = "chainguard"
 	Debian             OSType = "debian"
+	Echo               OSType = "echo"
 	Fedora             OSType = "fedora"
+	MinimOS            OSType = "minimos"
 	OpenSUSE           OSType = "opensuse"
-	OpenSUSELeap       OSType = "opensuse.leap"
-	OpenSUSETumbleweed OSType = "opensuse.tumbleweed"
+	OpenSUSELeap       OSType = "opensuse-leap"
+	OpenSUSETumbleweed OSType = "opensuse-tumbleweed"
 	Oracle             OSType = "oracle"
 	Photon             OSType = "photon"
 	RedHat             OSType = "redhat"
 	Rocky              OSType = "rocky"
-	SLES               OSType = "suse linux enterprise server"
+	SLEMicro           OSType = "slem"
+	SLES               OSType = "sles"
 	Ubuntu             OSType = "ubuntu"
 	Wolfi              OSType = "wolfi"
 )
 
+// OSTypeAliases is a map of aliases for operating systems.
+var OSTypeAliases = map[OSType]OSType{
+	// This is used to map the old family names to the new ones for backward compatibility.
+	"opensuse.leap":                OpenSUSELeap,
+	"opensuse.tumbleweed":          OpenSUSETumbleweed,
+	"suse linux enterprise micro":  SLEMicro,
+	"suse linux enterprise server": SLES,
+	// This is used to map OS names in EKS
+	"amazon linux": Amazon,
+	// This is used to map OS names in Kind
+	"debian gnu/linux": Debian,
+}
+
 // Programming language dependencies
 const (
-	Bundler       LangType = "bundler"
-	GemSpec       LangType = "gemspec"
-	Cargo         LangType = "cargo"
-	Composer      LangType = "composer"
-	Npm           LangType = "npm"
-	NuGet         LangType = "nuget"
-	DotNetCore    LangType = "dotnet-core"
-	PackagesProps LangType = "packages-props"
-	Pip           LangType = "pip"
-	Pipenv        LangType = "pipenv"
-	Poetry        LangType = "poetry"
-	CondaPkg      LangType = "conda-pkg"
-	CondaEnv      LangType = "conda-environment"
-	PythonPkg     LangType = "python-pkg"
-	NodePkg       LangType = "node-pkg"
-	Yarn          LangType = "yarn"
-	Pnpm          LangType = "pnpm"
-	Jar           LangType = "jar"
-	Pom           LangType = "pom"
-	Gradle        LangType = "gradle"
-	GoBinary      LangType = "gobinary"
-	GoModule      LangType = "gomod"
-	JavaScript    LangType = "javascript"
-	RustBinary    LangType = "rustbinary"
-	Conan         LangType = "conan"
-	Cocoapods     LangType = "cocoapods"
-	Swift         LangType = "swift"
-	Pub           LangType = "pub"
-	Hex           LangType = "hex"
-	Bitnami       LangType = "bitnami"
+	Bundler        LangType = "bundler"
+	GemSpec        LangType = "gemspec"
+	Cargo          LangType = "cargo"
+	Composer       LangType = "composer"
+	ComposerVendor LangType = "composer-vendor"
+	Npm            LangType = "npm"
+	Bun            LangType = "bun"
+	NuGet          LangType = "nuget"
+	DotNetCore     LangType = "dotnet-core"
+	PackagesProps  LangType = "packages-props"
+	Pip            LangType = "pip"
+	Pipenv         LangType = "pipenv"
+	Poetry         LangType = "poetry"
+	Uv             LangType = "uv"
+	CondaPkg       LangType = "conda-pkg"
+	CondaEnv       LangType = "conda-environment"
+	PythonPkg      LangType = "python-pkg"
+	NodePkg        LangType = "node-pkg"
+	Yarn           LangType = "yarn"
+	Pnpm           LangType = "pnpm"
+	Jar            LangType = "jar"
+	Pom            LangType = "pom"
+	Gradle         LangType = "gradle"
+	Sbt            LangType = "sbt"
+	GoBinary       LangType = "gobinary"
+	GoModule       LangType = "gomod"
+	JavaScript     LangType = "javascript"
+	RustBinary     LangType = "rustbinary"
+	Conan          LangType = "conan"
+	Cocoapods      LangType = "cocoapods"
+	Swift          LangType = "swift"
+	Pub            LangType = "pub"
+	Hex            LangType = "hex"
+	Bitnami        LangType = "bitnami"
+	Julia          LangType = "julia"
 
 	K8sUpstream LangType = "kubernetes"
 	EKS         LangType = "eks" // Amazon Elastic Kubernetes Service
@@ -82,17 +105,44 @@ const (
 	OCP         LangType = "ocp" // Red Hat OpenShift Container Platform
 )
 
-var AggregatingTypes = []LangType{
-	PythonPkg,
-	CondaPkg,
-	GemSpec,
-	NodePkg,
-	Jar,
-}
+var (
+	OSTypes = []OSType{
+		Alma,
+		Alpine,
+		Amazon,
+		Azure,
+		CBLMariner,
+		CentOS,
+		Chainguard,
+		Debian,
+		Echo,
+		Fedora,
+		MinimOS,
+		OpenSUSE,
+		OpenSUSELeap,
+		OpenSUSETumbleweed,
+		Oracle,
+		Photon,
+		RedHat,
+		Rocky,
+		SLEMicro,
+		SLES,
+		Ubuntu,
+		Wolfi,
+	}
+	AggregatingTypes = []LangType{
+		PythonPkg,
+		CondaPkg,
+		GemSpec,
+		NodePkg,
+		Jar,
+	}
+)
 
 // Config files
 const (
 	JSON                  ConfigType = "json"
+	YAML                  ConfigType = "yaml"
 	Dockerfile            ConfigType = "dockerfile"
 	Terraform             ConfigType = "terraform"
 	TerraformPlanJSON     ConfigType = "terraformplan"
@@ -113,19 +163,23 @@ const (
 	GoSum = "go.sum"
 
 	MavenPom = "pom.xml"
+	SbtLock  = "build.sbt.lock"
 
 	NpmPkg     = "package.json"
 	NpmPkgLock = "package-lock.json"
 	YarnLock   = "yarn.lock"
 	PnpmLock   = "pnpm-lock.yaml"
+	BunLock    = "bun.lock"
 
-	ComposerLock = "composer.lock"
-	ComposerJson = "composer.json"
+	ComposerLock          = "composer.lock"
+	ComposerJson          = "composer.json"
+	ComposerInstalledJson = "installed.json"
 
 	PyProject       = "pyproject.toml"
 	PipRequirements = "requirements.txt"
 	PipfileLock     = "Pipfile.lock"
 	PoetryLock      = "poetry.lock"
+	UvLock          = "uv.lock"
 
 	GemfileLock = "Gemfile.lock"
 
@@ -143,4 +197,7 @@ const (
 
 	CondaEnvYaml = "environment.yaml"
 	CondaEnvYml  = "environment.yml"
+
+	JuliaProject  = "Project.toml"
+	JuliaManifest = "Manifest.toml"
 )

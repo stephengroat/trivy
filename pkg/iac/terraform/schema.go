@@ -43,10 +43,17 @@ var Schema = &hcl.BodySchema{
 			LabelNames: []string{"type", "name"},
 		},
 		{
+			Type:       "ephemeral",
+			LabelNames: []string{"type", "name"},
+		},
+		{
 			Type: "moved",
 		},
 		{
 			Type: "import",
+		},
+		{
+			Type: "removed",
 		},
 	},
 }

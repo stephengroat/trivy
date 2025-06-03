@@ -15,26 +15,24 @@ import (
 
 // CompositeFS contains multiple filesystems for post-analyzers
 type CompositeFS struct {
-	group AnalyzerGroup
 	dir   string
 	files *sync.Map[Type, *mapfs.FS]
 }
 
-func NewCompositeFS(group AnalyzerGroup) (*CompositeFS, error) {
+func NewCompositeFS() (*CompositeFS, error) {
 	tmpDir, err := os.MkdirTemp("", "analyzer-fs-*")
 	if err != nil {
 		return nil, xerrors.Errorf("unable to create temporary directory: %w", err)
 	}
 
 	return &CompositeFS{
-		group: group,
 		dir:   tmpDir,
 		files: new(sync.Map[Type, *mapfs.FS]),
 	}, nil
 }
 
 // CopyFileToTemp takes a file path and information, opens the file, copies its contents to a temporary file
-func (c *CompositeFS) CopyFileToTemp(opener Opener, info os.FileInfo) (string, error) {
+func (c *CompositeFS) CopyFileToTemp(opener Opener, _ os.FileInfo) (string, error) {
 	// Create a temporary file to which the file in the layer will be copied
 	// so that all the files will not be loaded into memory
 	f, err := os.CreateTemp(c.dir, "file-*")
@@ -56,7 +54,7 @@ func (c *CompositeFS) CopyFileToTemp(opener Opener, info os.FileInfo) (string, e
 	}
 
 	// Use 0600 instead of file permissions to avoid errors when a file uses incorrect permissions (e.g. 0044).
-	if err = os.Chmod(f.Name(), 0600); err != nil {
+	if err = os.Chmod(f.Name(), 0o600); err != nil {
 		return "", xerrors.Errorf("chmod error: %w", err)
 	}
 

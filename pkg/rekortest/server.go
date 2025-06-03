@@ -11,7 +11,7 @@ import (
 	slsa "github.com/in-toto/in-toto-golang/in_toto/slsa_provenance/common"
 	"github.com/samber/lo"
 	"github.com/sigstore/rekor/pkg/generated/models"
-	"github.com/stretchr/testify/require"
+	"github.com/stretchr/testify/assert"
 
 	"github.com/aquasecurity/trivy/pkg/attestation"
 )
@@ -316,32 +316,32 @@ func NewServer(t *testing.T) *Server {
 		case "/api/v1/index/retrieve":
 			var params models.SearchIndex
 			err := json.NewDecoder(r.Body).Decode(&params)
-			require.NoError(t, err)
+			assert.NoError(t, err)
 
 			if res, ok := indexRes[params.Hash]; ok {
 				w.Header().Set("Content-Type", "application/json")
 				err = json.NewEncoder(w).Encode(res)
-				require.NoError(t, err)
+				assert.NoError(t, err)
 			} else {
 				http.Error(w, "something wrong", http.StatusNotFound)
 			}
 		case "/api/v1/log/entries/retrieve":
 			var params models.SearchLogQuery
 			err := json.NewDecoder(r.Body).Decode(&params)
-			require.NoError(t, err)
+			assert.NoError(t, err)
 
 			resEntries := models.LogEntry{}
 			for _, uuid := range params.EntryUUIDs {
-				if e, ok := entries[uuid]; !ok {
+				e, ok := entries[uuid]
+				if !ok {
 					http.Error(w, "no such uuid", http.StatusNotFound)
 					return
-				} else {
-					resEntries[uuid] = e
 				}
+				resEntries[uuid] = e
 			}
 			w.Header().Set("Content-Type", "application/json")
 			err = json.NewEncoder(w).Encode([]models.LogEntry{resEntries})
-			require.NoError(t, err)
+			assert.NoError(t, err)
 		}
 		return
 	}))

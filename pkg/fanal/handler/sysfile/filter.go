@@ -2,9 +2,8 @@ package nodejs
 
 import (
 	"context"
+	"slices"
 	"strings"
-
-	"golang.org/x/exp/slices"
 
 	"github.com/aquasecurity/trivy/pkg/fanal/analyzer"
 	"github.com/aquasecurity/trivy/pkg/fanal/artifact"
@@ -18,32 +17,13 @@ func init() {
 
 const version = 1
 
-var (
-	defaultSystemFiles = []string{
-		// TODO: Google Distroless removes /var/lib/dpkg/info/*.list, so we cannot know which files are installed by dpkg.
-		//       We have to hardcode these files at the moment, but should look for the better way.
-		"/usr/lib/python2.7/argparse.egg-info",
-		"/usr/lib/python2.7/lib-dynload/Python-2.7.egg-info",
-		"/usr/lib/python2.7/wsgiref.egg-info",
-	}
-
-	affectedTypes = []types.LangType{
-		// ruby
-		types.GemSpec,
-
-		// python
-		types.PythonPkg,
-
-		// conda
-		types.CondaPkg,
-
-		// node.js
-		types.NodePkg,
-
-		// Go binaries
-		types.GoBinary,
-	}
-)
+var defaultSystemFiles = []string{
+	// TODO: Google Distroless removes /var/lib/dpkg/info/*.list, so we cannot know which files are installed by dpkg.
+	//       We have to hardcode these files at the moment, but should look for the better way.
+	"/usr/lib/python2.7/argparse.egg-info",
+	"/usr/lib/python2.7/lib-dynload/Python-2.7.egg-info",
+	"/usr/lib/python2.7/wsgiref.egg-info",
+}
 
 type systemFileFilteringPostHandler struct{}
 
@@ -58,7 +38,7 @@ func (h systemFileFilteringPostHandler) Handle(_ context.Context, result *analyz
 		// Trim leading slashes to be the same format as the path in container images.
 		systemFile := strings.TrimPrefix(file, "/")
 		// We should check the root filepath ("/") and ignore it.
-		// Otherwise libraries with an empty filePath will be removed.
+		// Otherwise, packages with an empty filePath will be removed.
 		if systemFile != "" {
 			systemFiles = append(systemFiles, systemFile)
 		}
@@ -68,12 +48,12 @@ func (h systemFileFilteringPostHandler) Handle(_ context.Context, result *analyz
 	for _, app := range blob.Applications {
 		// If the lang-specific package was installed by OS package manager, it should not be taken.
 		// Otherwise, the package version will be wrong, then it will lead to false positive.
-		if slices.Contains(systemFiles, app.FilePath) && slices.Contains(affectedTypes, app.Type) {
+		if slices.Contains(systemFiles, app.FilePath) {
 			continue
 		}
 
 		var pkgs []types.Package
-		for _, lib := range app.Libraries {
+		for _, lib := range app.Packages {
 			// If the lang-specific package was installed by OS package manager, it should not be taken.
 			// Otherwise, the package version will be wrong, then it will lead to false positive.
 			if slices.Contains(systemFiles, lib.FilePath) {
@@ -82,8 +62,8 @@ func (h systemFileFilteringPostHandler) Handle(_ context.Context, result *analyz
 			pkgs = append(pkgs, lib)
 		}
 
-		// Overwrite Libraries
-		app.Libraries = pkgs
+		// Overwrite Packages
+		app.Packages = pkgs
 		apps = append(apps, app)
 	}
 

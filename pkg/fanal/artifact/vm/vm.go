@@ -10,9 +10,9 @@ import (
 	"github.com/google/wire"
 	"golang.org/x/xerrors"
 
+	"github.com/aquasecurity/trivy/pkg/cache"
 	"github.com/aquasecurity/trivy/pkg/fanal/analyzer"
 	"github.com/aquasecurity/trivy/pkg/fanal/artifact"
-	"github.com/aquasecurity/trivy/pkg/fanal/cache"
 	"github.com/aquasecurity/trivy/pkg/fanal/handler"
 	"github.com/aquasecurity/trivy/pkg/fanal/types"
 	"github.com/aquasecurity/trivy/pkg/fanal/walker"
@@ -157,6 +157,9 @@ func (a *Storage) Analyze(ctx context.Context, r *io.SectionReader) (types.BlobI
 		Secrets:         result.Secrets,
 		Licenses:        result.Licenses,
 		CustomResources: result.CustomResources,
+
+		// For Red Hat
+		BuildInfo: result.BuildInfo,
 	}
 
 	if err = a.handlerManager.PostHandle(ctx, result, &blobInfo); err != nil {

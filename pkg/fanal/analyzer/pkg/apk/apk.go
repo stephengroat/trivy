@@ -8,27 +8,28 @@ import (
 	"fmt"
 	"os"
 	"path"
+	"slices"
 	"sort"
 	"strings"
 
 	apkVersion "github.com/knqyf263/go-apk-version"
 	"github.com/samber/lo"
-	"golang.org/x/exp/slices"
 
 	"github.com/aquasecurity/trivy/pkg/digest"
 	"github.com/aquasecurity/trivy/pkg/fanal/analyzer"
 	"github.com/aquasecurity/trivy/pkg/fanal/types"
 	"github.com/aquasecurity/trivy/pkg/licensing"
 	"github.com/aquasecurity/trivy/pkg/log"
+	"github.com/aquasecurity/trivy/pkg/set"
 )
 
 func init() {
 	analyzer.RegisterAnalyzer(newAlpinePkgAnalyzer())
 }
 
-const analyzerVersion = 2
+const analyzerVersion = 3
 
-var requiredFiles = []string{"lib/apk/db/installed"}
+var requiredFiles = []string{"lib/apk/db/installed", "usr/lib/apk/db/installed"}
 
 type alpinePkgAnalyzer struct{}
 
@@ -107,6 +108,8 @@ func (a alpinePkgAnalyzer) parseApkInfo(ctx context.Context, scanner *bufio.Scan
 			if d != "" {
 				pkg.Digest = d
 			}
+		case "m:":
+			pkg.Maintainer = line[2:]
 		}
 
 		if pkg.Name != "" && pkg.Version != "" {
@@ -142,26 +145,8 @@ func (a alpinePkgAnalyzer) trimRequirement(s string) string {
 }
 
 func (a alpinePkgAnalyzer) parseLicense(line string) []string {
-	line = line[2:] // Remove "L:"
-	if line == "" {
-		return nil
-	}
-	var licenses []string
-	// e.g. MPL 2.0 GPL2+ => {"MPL2.0", "GPL2+"}
-	for i, s := range strings.Fields(line) {
-		s = strings.Trim(s, "()")
-		switch {
-		case s == "":
-			continue
-		case s == "AND" || s == "OR":
-			continue
-		case i > 0 && (s == "1.0" || s == "2.0" || s == "3.0"):
-			licenses[i-1] = licensing.Normalize(licenses[i-1] + s)
-		default:
-			licenses = append(licenses, licensing.Normalize(s))
-		}
-	}
-	return licenses
+	// Remove "L:" before split
+	return licensing.LaxSplitLicenses(line[2:])
 }
 
 func (a alpinePkgAnalyzer) parseProvides(line, pkgID string, provides map[string]string) {
@@ -203,13 +188,13 @@ func (a alpinePkgAnalyzer) consolidateDependencies(pkgs []types.Package, provide
 }
 
 func (a alpinePkgAnalyzer) uniquePkgs(pkgs []types.Package) (uniqPkgs []types.Package) {
-	uniq := make(map[string]struct{})
+	uniq := set.New[string]()
 	for _, pkg := range pkgs {
-		if _, ok := uniq[pkg.Name]; ok {
+		if uniq.Contains(pkg.Name) {
 			continue
 		}
 		uniqPkgs = append(uniqPkgs, pkg)
-		uniq[pkg.Name] = struct{}{}
+		uniq.Append(pkg.Name)
 	}
 	return uniqPkgs
 }
@@ -224,6 +209,11 @@ func (a alpinePkgAnalyzer) Type() analyzer.Type {
 
 func (a alpinePkgAnalyzer) Version() int {
 	return analyzerVersion
+}
+
+// StaticPaths returns a list of static file paths to analyze
+func (a alpinePkgAnalyzer) StaticPaths() []string {
+	return requiredFiles
 }
 
 // decodeChecksumLine decodes checksum line

@@ -33,22 +33,22 @@ func NewDriver(libType ftypes.LangType) (Driver, bool) {
 	case ftypes.RustBinary, ftypes.Cargo:
 		ecosystem = vulnerability.Cargo
 		comparer = compare.GenericComparer{}
-	case ftypes.Composer:
+	case ftypes.Composer, ftypes.ComposerVendor:
 		ecosystem = vulnerability.Composer
 		comparer = compare.GenericComparer{}
 	case ftypes.GoBinary, ftypes.GoModule:
 		ecosystem = vulnerability.Go
 		comparer = compare.GenericComparer{}
-	case ftypes.Jar, ftypes.Pom, ftypes.Gradle:
+	case ftypes.Jar, ftypes.Pom, ftypes.Gradle, ftypes.Sbt:
 		ecosystem = vulnerability.Maven
 		comparer = maven.Comparer{}
-	case ftypes.Npm, ftypes.Yarn, ftypes.Pnpm, ftypes.NodePkg, ftypes.JavaScript:
+	case ftypes.Npm, ftypes.Yarn, ftypes.Pnpm, ftypes.Bun, ftypes.NodePkg, ftypes.JavaScript:
 		ecosystem = vulnerability.Npm
 		comparer = npm.Comparer{}
 	case ftypes.NuGet, ftypes.DotNetCore, ftypes.PackagesProps:
 		ecosystem = vulnerability.NuGet
 		comparer = compare.GenericComparer{}
-	case ftypes.Pipenv, ftypes.Poetry, ftypes.Pip, ftypes.PythonPkg:
+	case ftypes.Pipenv, ftypes.Poetry, ftypes.Pip, ftypes.PythonPkg, ftypes.Uv:
 		ecosystem = vulnerability.Pip
 		comparer = pep440.Comparer{}
 	case ftypes.Pub:
@@ -81,6 +81,9 @@ func NewDriver(libType ftypes.LangType) (Driver, bool) {
 	case ftypes.K8sUpstream:
 		ecosystem = vulnerability.Kubernetes
 		comparer = compare.GenericComparer{}
+	case ftypes.Julia:
+		log.Warn("Julia is supported for SBOM, not for vulnerability scanning")
+		return Driver{}, false
 	default:
 		log.Warn("The library type is not supported for vulnerability scanning",
 			log.String("type", string(libType)))
@@ -130,6 +133,7 @@ func (d *Driver) DetectVulnerabilities(pkgID, pkgName, pkgVer string) ([]types.D
 			InstalledVersion: pkgVer,
 			FixedVersion:     createFixedVersions(adv),
 			DataSource:       adv.DataSource,
+			Custom:           adv.Custom,
 		}
 		vulns = append(vulns, vuln)
 	}

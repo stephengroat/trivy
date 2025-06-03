@@ -1,11 +1,10 @@
 package sbom
 
 import (
-	"context"
-	"github.com/package-url/packageurl-go"
 	"os"
 	"testing"
 
+	"github.com/package-url/packageurl-go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -28,8 +27,35 @@ func Test_sbomAnalyzer_Analyze(t *testing.T) {
 			want: &analyzer.AnalysisResult{
 				Applications: []types.Application{
 					{
-						Type: types.Jar,
-						Libraries: types.Packages{
+						Type:     types.Bitnami,
+						FilePath: "opt/bitnami/elasticsearch",
+						Packages: types.Packages{
+							{
+								ID:       "elasticsearch@8.9.1",
+								Name:     "elasticsearch",
+								Version:  "8.9.1",
+								Arch:     "arm64",
+								Licenses: []string{"Elastic-2.0"},
+								Identifier: types.PkgIdentifier{
+									PURL: &packageurl.PackageURL{
+										Type:    packageurl.TypeBitnami,
+										Name:    "elasticsearch",
+										Version: "8.9.1",
+										Qualifiers: packageurl.Qualifiers{
+											{
+												Key:   "arch",
+												Value: "arm64",
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+					{
+						Type:     types.Jar,
+						FilePath: "opt/bitnami/elasticsearch/.spdx-elasticsearch.spdx",
+						Packages: types.Packages{
 							{
 								ID:       "co.elastic.apm:apm-agent:1.36.0",
 								Name:     "co.elastic.apm:apm-agent",
@@ -88,32 +114,6 @@ func Test_sbomAnalyzer_Analyze(t *testing.T) {
 							},
 						},
 					},
-					{
-						Type:     types.Bitnami,
-						FilePath: "opt/bitnami/elasticsearch",
-						Libraries: types.Packages{
-							{
-								ID:       "Elasticsearch@8.9.1",
-								Name:     "Elasticsearch",
-								Version:  "8.9.1",
-								Arch:     "arm64",
-								Licenses: []string{"Elastic-2.0"},
-								Identifier: types.PkgIdentifier{
-									PURL: &packageurl.PackageURL{
-										Type:    packageurl.TypeBitnami,
-										Name:    "elasticsearch",
-										Version: "8.9.1",
-										Qualifiers: packageurl.Qualifiers{
-											{
-												Key:   "arch",
-												Value: "arm64",
-											},
-										},
-									},
-								},
-							},
-						},
-					},
 				},
 			},
 			wantErr: require.NoError,
@@ -125,8 +125,9 @@ func Test_sbomAnalyzer_Analyze(t *testing.T) {
 			want: &analyzer.AnalysisResult{
 				Applications: []types.Application{
 					{
-						Type: types.Jar,
-						Libraries: types.Packages{
+						Type:     types.Jar,
+						FilePath: "opt/bitnami/elasticsearch/.spdx-elasticsearch.cdx",
+						Packages: types.Packages{
 							{
 								FilePath: "opt/bitnami/elasticsearch/modules/apm/elastic-apm-agent-1.36.0.jar",
 								ID:       "co.elastic.apm:apm-agent:1.36.0",
@@ -164,6 +165,57 @@ func Test_sbomAnalyzer_Analyze(t *testing.T) {
 			wantErr: require.NoError,
 		},
 		{
+			name:     "valid sbom spdx file without application component",
+			file:     "testdata/sbom-without-app-component.spdx.json",
+			filePath: "layers/sbom/launch/buildpacksio_lifecycle/launcher/sbom.spdx.json",
+			want: &analyzer.AnalysisResult{
+				Applications: []types.Application{
+					{
+						Type:     types.GoBinary,
+						FilePath: "layers/sbom/launch/buildpacksio_lifecycle/launcher/sbom.spdx.json",
+						Packages: types.Packages{
+							{
+								ID:      "github.com/buildpacks/lifecycle@v0.20.2",
+								Name:    "github.com/buildpacks/lifecycle",
+								Version: "v0.20.2",
+								Identifier: types.PkgIdentifier{
+									PURL: &packageurl.PackageURL{
+										Type:      packageurl.TypeGolang,
+										Namespace: "github.com/buildpacks",
+										Name:      "lifecycle",
+										Version:   "v0.20.2",
+									},
+								},
+								Licenses: []string{
+									"NOASSERTION",
+								},
+							},
+						},
+					},
+					{
+						Type:     types.Jar,
+						FilePath: "layers/sbom/launch/buildpacksio_lifecycle/launcher/sbom.spdx.json",
+						Packages: types.Packages{
+							{
+								ID:      "co.elastic.apm:apm-agent:1.36.0",
+								Name:    "co.elastic.apm:apm-agent",
+								Version: "1.36.0",
+								Identifier: types.PkgIdentifier{
+									PURL: &packageurl.PackageURL{
+										Type:      packageurl.TypeMaven,
+										Namespace: "co.elastic.apm",
+										Name:      "apm-agent",
+										Version:   "1.36.0",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			wantErr: require.NoError,
+		},
+		{
 			name:     "valid postgresql spdx file",
 			file:     "testdata/postgresql.spdx.json",
 			filePath: "opt/bitnami/postgresql/.spdx-postgresql.spdx",
@@ -172,10 +224,10 @@ func Test_sbomAnalyzer_Analyze(t *testing.T) {
 					{
 						Type:     types.Bitnami,
 						FilePath: "opt/bitnami/postgresql",
-						Libraries: types.Packages{
+						Packages: types.Packages{
 							{
-								ID:       "GDAL@3.7.1",
-								Name:     "GDAL",
+								ID:       "gdal@3.7.1",
+								Name:     "gdal",
 								Version:  "3.7.1",
 								Licenses: []string{"MIT"},
 								Identifier: types.PkgIdentifier{
@@ -187,8 +239,8 @@ func Test_sbomAnalyzer_Analyze(t *testing.T) {
 								},
 							},
 							{
-								ID:       "GEOS@3.8.3",
-								Name:     "GEOS",
+								ID:       "geos@3.8.3",
+								Name:     "geos",
 								Version:  "3.8.3",
 								Licenses: []string{"LGPL-2.1-only"},
 								Identifier: types.PkgIdentifier{
@@ -200,8 +252,8 @@ func Test_sbomAnalyzer_Analyze(t *testing.T) {
 								},
 							},
 							{
-								ID:       "PostgreSQL@15.3.0",
-								Name:     "PostgreSQL",
+								ID:       "postgresql@15.3.0",
+								Name:     "postgresql",
 								Version:  "15.3.0",
 								Licenses: []string{"PostgreSQL"},
 								Identifier: types.PkgIdentifier{
@@ -212,14 +264,14 @@ func Test_sbomAnalyzer_Analyze(t *testing.T) {
 									},
 								},
 								DependsOn: []string{
-									"GEOS@3.8.3",
-									"Proj@6.3.2",
-									"GDAL@3.7.1",
+									"geos@3.8.3",
+									"proj@6.3.2",
+									"gdal@3.7.1",
 								},
 							},
 							{
-								ID:       "Proj@6.3.2",
-								Name:     "Proj",
+								ID:       "proj@6.3.2",
+								Name:     "proj",
 								Version:  "6.3.2",
 								Licenses: []string{"MIT"},
 								Identifier: types.PkgIdentifier{
@@ -227,6 +279,42 @@ func Test_sbomAnalyzer_Analyze(t *testing.T) {
 										Type:    packageurl.TypeBitnami,
 										Name:    "proj",
 										Version: "6.3.2",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			wantErr: require.NoError,
+		},
+		{
+			name:     "valid ca-certificates spdx file",
+			file:     "testdata/ca-certificates.spdx.json",
+			filePath: "opt/bitnami/ca-certificates/.spdx-ca-certificates.spdx",
+			want: &analyzer.AnalysisResult{
+				PackageInfos: []types.PackageInfo{
+					{
+						FilePath: "opt/bitnami/ca-certificates/.spdx-ca-certificates.spdx",
+						Packages: types.Packages{
+							{
+								ID:         "ca-certificates@20230311",
+								Name:       "ca-certificates",
+								Version:    "20230311",
+								Arch:       "all",
+								SrcName:    "ca-certificates",
+								SrcVersion: "20230311",
+								Licenses:   []string{"GPL-2.0-or-later AND GPL-2.0-only AND MPL-2.0"},
+								Identifier: types.PkgIdentifier{
+									PURL: &packageurl.PackageURL{
+										Type:      packageurl.TypeDebian,
+										Namespace: "debian",
+										Name:      "ca-certificates",
+										Version:   "20230311",
+										Qualifiers: packageurl.Qualifiers{
+											{Key: "arch", Value: "all"},
+											{Key: "distro", Value: "debian-12.9"},
+										},
 									},
 								},
 							},
@@ -251,7 +339,7 @@ func Test_sbomAnalyzer_Analyze(t *testing.T) {
 			defer f.Close()
 
 			a := sbomAnalyzer{}
-			got, err := a.Analyze(context.Background(), analyzer.AnalysisInput{
+			got, err := a.Analyze(t.Context(), analyzer.AnalysisInput{
 				FilePath: tt.filePath,
 				Content:  f,
 			})

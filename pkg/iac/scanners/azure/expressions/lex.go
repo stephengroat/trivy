@@ -2,6 +2,7 @@ package expressions
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -23,7 +24,7 @@ const (
 
 type Token struct {
 	Type TokenType
-	Data interface{}
+	Data any
 }
 
 type lexer struct {
@@ -119,7 +120,7 @@ func (l *lexer) lexString(terminator rune) (Token, error) {
 func (l *lexer) readEscapedChar() (rune, error) {
 	r, err := l.read()
 	if err != nil {
-		return 0, fmt.Errorf("unexpected EOF")
+		return 0, errors.New("unexpected EOF")
 	}
 	switch r {
 	case 'n':

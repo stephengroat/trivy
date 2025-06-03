@@ -4,10 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"slices"
 
+	"github.com/samber/lo"
 	"golang.org/x/xerrors"
 
 	"github.com/aquasecurity/trivy/pkg/commands/operation"
+	"github.com/aquasecurity/trivy/pkg/dependency"
+	ftypes "github.com/aquasecurity/trivy/pkg/fanal/types"
 	"github.com/aquasecurity/trivy/pkg/flag"
 	"github.com/aquasecurity/trivy/pkg/log"
 	"github.com/aquasecurity/trivy/pkg/report"
@@ -16,6 +20,7 @@ import (
 )
 
 func Run(ctx context.Context, opts flag.Options) (err error) {
+	logger := log.WithPrefix("convert")
 	ctx, cancel := context.WithTimeout(ctx, opts.Timeout)
 	defer cancel()
 
@@ -35,14 +40,49 @@ func Run(ctx context.Context, opts flag.Options) (err error) {
 		return xerrors.New("AWS and Kubernetes scanning reports are not yet supported")
 	}
 
+	compat(&r)
 	if err = result.Filter(ctx, r, opts.FilterOpts()); err != nil {
 		return xerrors.Errorf("unable to filter results: %w", err)
 	}
 
-	log.Debug("Writing report to output...")
+	if len(opts.Scanners) == 0 && opts.Format == types.FormatTable && slices.Contains(opts.TableModes, types.Summary) {
+		logger.Info("To display the summary table, enable the scanners used during JSON report generation.")
+		opts.TableModes = lo.Filter(opts.TableModes, func(mode types.TableMode, _ int) bool {
+			return mode != types.Summary
+		})
+	}
+
+	logger.Debug("Writing report to output...")
 	if err = report.Write(ctx, r, opts); err != nil {
 		return xerrors.Errorf("unable to write results: %w", err)
 	}
 
 	return operation.Exit(opts, r.Results.Failed(), r.Metadata)
+}
+
+// compat converts the JSON report to the latest format
+func compat(r *types.Report) {
+	for i, res := range r.Results {
+		pkgs := make(map[string]ftypes.Package, len(res.Packages))
+		for j, pkg := range res.Packages {
+			if pkg.Identifier.UID != "" {
+				continue
+			}
+			// Fill in the UID field since older JSON reports don't have it
+			pkg.Identifier.UID = dependency.UID(res.Target, pkg)
+			pkgs[pkg.ID+pkg.FilePath] = pkg
+			r.Results[i].Packages[j] = pkg
+		}
+
+		for j, vuln := range res.Vulnerabilities {
+			if vuln.PkgIdentifier.UID != "" {
+				continue
+			}
+			pkg, ok := pkgs[vuln.PkgID+vuln.PkgPath]
+			if !ok {
+				continue
+			}
+			r.Results[i].Vulnerabilities[j].PkgIdentifier = pkg.Identifier
+		}
+	}
 }

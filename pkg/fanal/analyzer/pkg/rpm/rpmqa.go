@@ -4,9 +4,9 @@ import (
 	"bufio"
 	"context"
 	"os"
+	"slices"
 	"strings"
 
-	"golang.org/x/exp/slices"
 	"golang.org/x/xerrors"
 
 	"github.com/aquasecurity/trivy/pkg/fanal/analyzer"
@@ -91,4 +91,8 @@ func (a rpmqaPkgAnalyzer) Type() analyzer.Type {
 
 func (a rpmqaPkgAnalyzer) Version() int {
 	return versionRpmqa
+}
+
+func (a rpmqaPkgAnalyzer) StaticPaths() []string {
+	return requiredRpmqaFiles
 }

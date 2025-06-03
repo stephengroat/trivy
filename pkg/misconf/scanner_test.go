@@ -1,7 +1,6 @@
 package misconf
 
 import (
-	"context"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -11,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/aquasecurity/trivy/pkg/fanal/types"
+	"github.com/aquasecurity/trivy/pkg/iac/detection"
 	"github.com/aquasecurity/trivy/pkg/mapfs"
 )
 
@@ -82,8 +82,7 @@ func TestScannerOption_Sort(t *testing.T) {
 
 func TestScanner_Scan(t *testing.T) {
 	type fields struct {
-		filePatterns []string
-		opt          ScannerOption
+		opt ScannerOption
 	}
 	type file struct {
 		path    string
@@ -91,7 +90,7 @@ func TestScanner_Scan(t *testing.T) {
 	}
 	tests := []struct {
 		name             string
-		scannerFunc      func(filePatterns []string, opt ScannerOption) (*Scanner, error)
+		fileType         detection.FileType
 		fields           fields
 		files            []file
 		wantFilePath     string
@@ -99,8 +98,8 @@ func TestScanner_Scan(t *testing.T) {
 		misconfsExpected int
 	}{
 		{
-			name:        "happy path. Dockerfile",
-			scannerFunc: NewDockerfileScanner,
+			name:     "happy path. Dockerfile",
+			fileType: detection.FileTypeDockerfile,
 			fields: fields{
 				opt: ScannerOption{},
 			},
@@ -115,11 +114,12 @@ func TestScanner_Scan(t *testing.T) {
 			misconfsExpected: 1,
 		},
 		{
-			name:        "happy path. Dockerfile with custom file name",
-			scannerFunc: NewDockerfileScanner,
+			name:     "happy path. Dockerfile with custom file name",
+			fileType: detection.FileTypeDockerfile,
 			fields: fields{
-				filePatterns: []string{"dockerfile:dockerf"},
-				opt:          ScannerOption{},
+				opt: ScannerOption{
+					FilePatterns: []string{"dockerfile:dockerf"},
+				},
 			},
 			files: []file{
 				{
@@ -132,8 +132,8 @@ func TestScanner_Scan(t *testing.T) {
 			misconfsExpected: 1,
 		},
 		{
-			name:        "happy path. terraform plan file",
-			scannerFunc: NewTerraformPlanJSONScanner,
+			name:     "happy path. terraform plan file",
+			fileType: detection.FileTypeTerraformPlanJSON,
 			files: []file{
 				{
 					path:    "main.tfplan.json",
@@ -150,16 +150,17 @@ func TestScanner_Scan(t *testing.T) {
 			// Create a virtual filesystem for testing
 			fsys := mapfs.New()
 			for _, f := range tt.files {
-				err := fsys.WriteVirtualFile(f.path, f.content, 0666)
+				err := fsys.WriteVirtualFile(f.path, f.content, 0o666)
 				require.NoError(t, err)
 			}
 
-			s, err := tt.scannerFunc(tt.fields.filePatterns, tt.fields.opt)
+			// s, err := tt.scannerFunc(tt.fields.filePatterns, tt.fields.opt)
+			s, err := NewScanner(tt.fileType, tt.fields.opt)
 			require.NoError(t, err)
 
-			misconfs, err := s.Scan(context.Background(), fsys)
+			misconfs, err := s.Scan(t.Context(), fsys)
 			require.NoError(t, err)
-			require.Equal(t, tt.misconfsExpected, len(misconfs), "wrong number of misconfigurations found")
+			require.Len(t, misconfs, tt.misconfsExpected, "wrong number of misconfigurations found")
 			if tt.misconfsExpected == 1 {
 				assert.Equal(t, tt.wantFilePath, misconfs[0].FilePath, "filePaths don't equal")
 				assert.Equal(t, tt.wantFileType, misconfs[0].FileType, "fileTypes don't equal")
@@ -171,8 +172,8 @@ func TestScanner_Scan(t *testing.T) {
 func Test_createPolicyFS(t *testing.T) {
 	t.Run("outside pwd", func(t *testing.T) {
 		tmpDir := t.TempDir()
-		require.NoError(t, os.MkdirAll(filepath.Join(tmpDir, "subdir/testdir"), 0750))
-		f, got, err := CreatePolicyFS([]string{filepath.Join(tmpDir, "subdir/testdir")})
+		require.NoError(t, os.MkdirAll(filepath.Join(tmpDir, "subdir", "testdir"), 0o750))
+		f, got, err := CreatePolicyFS([]string{filepath.Join(tmpDir, "subdir", "testdir")})
 		assertFS(t, tmpDir, f, got, err)
 	})
 }
@@ -180,8 +181,8 @@ func Test_createPolicyFS(t *testing.T) {
 func Test_CreateDataFS(t *testing.T) {
 	t.Run("outside pwd", func(t *testing.T) {
 		tmpDir := t.TempDir()
-		require.NoError(t, os.MkdirAll(filepath.Join(tmpDir, "subdir/testdir"), 0750))
-		f, got, err := CreateDataFS([]string{filepath.Join(tmpDir, "subdir/testdir")})
+		require.NoError(t, os.MkdirAll(filepath.Join(tmpDir, "subdir", "testdir"), 0o750))
+		f, got, err := CreateDataFS([]string{filepath.Join(tmpDir, "subdir", "testdir")})
 		assertFS(t, tmpDir, f, got, err)
 	})
 }

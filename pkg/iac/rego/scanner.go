@@ -7,65 +7,70 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
-	"maps"
+	"slices"
 	"strings"
 
-	"github.com/open-policy-agent/opa/ast"
-	"github.com/open-policy-agent/opa/rego"
-	"github.com/open-policy-agent/opa/storage"
+	"github.com/open-policy-agent/opa/v1/ast"
+	"github.com/open-policy-agent/opa/v1/rego"
+	"github.com/open-policy-agent/opa/v1/storage"
+	"github.com/open-policy-agent/opa/v1/util"
+	"github.com/samber/lo"
 
-	"github.com/aquasecurity/trivy/pkg/iac/debug"
 	"github.com/aquasecurity/trivy/pkg/iac/framework"
-	"github.com/aquasecurity/trivy/pkg/iac/rego/schemas"
+	"github.com/aquasecurity/trivy/pkg/iac/providers"
 	"github.com/aquasecurity/trivy/pkg/iac/scan"
 	"github.com/aquasecurity/trivy/pkg/iac/scanners/options"
 	"github.com/aquasecurity/trivy/pkg/iac/types"
+	"github.com/aquasecurity/trivy/pkg/log"
+	"github.com/aquasecurity/trivy/pkg/set"
 )
+
+var checkTypesWithSubtype = set.New(types.SourceCloud, types.SourceDefsec, types.SourceKubernetes)
+
+var supportedProviders = makeSupportedProviders()
+
+func makeSupportedProviders() set.Set[string] {
+	m := set.New[string]()
+	for _, p := range providers.AllProviders() {
+		m.Append(string(p))
+	}
+	m.Append("kind") // kubernetes
+	return m
+}
 
 var _ options.ConfigurableScanner = (*Scanner)(nil)
 
 type Scanner struct {
-	ruleNamespaces map[string]struct{}
-	policies       map[string]*ast.Module
-	store          storage.Store
-	dataDirs       []string
-	runtimeValues  *ast.Term
-	compiler       *ast.Compiler
-	regoErrorLimit int
-	debug          debug.Logger
-	traceWriter    io.Writer
-	tracePerResult bool
-	retriever      *MetadataRetriever
-	policyFS       fs.FS
-	dataFS         fs.FS
-	frameworks     []framework.Framework
-	spec           string
-	inputSchema    interface{} // unmarshalled into this from a json schema document
-	sourceType     types.Source
+	ruleNamespaces           set.Set[string]
+	policies                 map[string]*ast.Module
+	moduleMetadata           map[string]*StaticMetadata
+	store                    storage.Store
+	runtimeValues            *ast.Term
+	compiler                 *ast.Compiler
+	regoErrorLimit           int
+	logger                   *log.Logger
+	traceWriter              io.Writer
+	tracePerResult           bool
+	retriever                *MetadataRetriever
+	policyFS                 fs.FS
+	policyDirs               []string
+	policyReaders            []io.Reader
+	dataFS                   fs.FS
+	dataDirs                 []string
+	frameworks               []framework.Framework
+	includeDeprecatedChecks  bool
+	includeEmbeddedPolicies  bool
+	includeEmbeddedLibraries bool
+	trivyVersion             string
 
 	embeddedLibs   map[string]*ast.Module
 	embeddedChecks map[string]*ast.Module
+	customSchemas  map[string][]byte
+
+	disabledCheckIDs set.Set[string]
 }
 
-func (s *Scanner) SetUseEmbeddedLibraries(b bool) {
-	// handled externally
-}
-
-func (s *Scanner) SetSpec(spec string) {
-	s.spec = spec
-}
-
-func (s *Scanner) SetRegoOnly(bool) {}
-
-func (s *Scanner) SetFrameworks(frameworks []framework.Framework) {
-	s.frameworks = frameworks
-}
-
-func (s *Scanner) SetUseEmbeddedPolicies(b bool) {
-	// handled externally
-}
-
-func (s *Scanner) trace(heading string, input interface{}) {
+func (s *Scanner) trace(heading string, input any) {
 	if s.traceWriter == nil {
 		return
 	}
@@ -76,52 +81,6 @@ func (s *Scanner) trace(heading string, input interface{}) {
 	_, _ = fmt.Fprintf(s.traceWriter, "REGO %[1]s:\n%s\nEND REGO %[1]s\n\n", heading, string(data))
 }
 
-func (s *Scanner) SetPolicyFilesystem(fsys fs.FS) {
-	s.policyFS = fsys
-}
-
-func (s *Scanner) SetDataFilesystem(fsys fs.FS) {
-	s.dataFS = fsys
-}
-
-func (s *Scanner) SetPolicyReaders(_ []io.Reader) {
-	// NOTE: Policy readers option not applicable for rego, policies are loaded on-demand by other scanners.
-}
-
-func (s *Scanner) SetDebugWriter(writer io.Writer) {
-	s.debug = debug.New(writer, "rego", "scanner")
-}
-
-func (s *Scanner) SetTraceWriter(writer io.Writer) {
-	s.traceWriter = writer
-}
-
-func (s *Scanner) SetPerResultTracingEnabled(b bool) {
-	s.tracePerResult = b
-}
-
-func (s *Scanner) SetPolicyDirs(_ ...string) {
-	// NOTE: Policy dirs option not applicable for rego, policies are loaded on-demand by other scanners.
-}
-
-func (s *Scanner) SetDataDirs(dirs ...string) {
-	s.dataDirs = dirs
-}
-
-func (s *Scanner) SetPolicyNamespaces(namespaces ...string) {
-	for _, namespace := range namespaces {
-		s.ruleNamespaces[namespace] = struct{}{}
-	}
-}
-
-func (s *Scanner) SetSkipRequiredCheck(_ bool) {
-	// NOTE: Skip required option not applicable for rego.
-}
-
-func (s *Scanner) SetRegoErrorLimit(limit int) {
-	s.regoErrorLimit = limit
-}
-
 type DynamicMetadata struct {
 	Warning   bool
 	Filepath  string
@@ -130,38 +89,26 @@ type DynamicMetadata struct {
 	EndLine   int
 }
 
-func NewScanner(source types.Source, opts ...options.ScannerOption) *Scanner {
-	schema, ok := schemas.SchemaMap[source]
-	if !ok {
-		schema = schemas.Anything
-	}
+func NewScanner(opts ...options.ScannerOption) *Scanner {
+	LoadAndRegister()
 
 	s := &Scanner{
-		regoErrorLimit: ast.CompileErrorLimitDefault,
-		sourceType:     source,
-		ruleNamespaces: make(map[string]struct{}),
-		runtimeValues:  addRuntimeValues(),
+		regoErrorLimit:   ast.CompileErrorLimitDefault,
+		ruleNamespaces:   builtinNamespaces.Clone(),
+		runtimeValues:    addRuntimeValues(),
+		logger:           log.WithPrefix("rego"),
+		customSchemas:    make(map[string][]byte),
+		disabledCheckIDs: set.New[string](),
+		moduleMetadata:   make(map[string]*StaticMetadata),
 	}
-
-	maps.Copy(s.ruleNamespaces, builtinNamespaces)
 
 	for _, opt := range opts {
 		opt(s)
 	}
-	if schema != schemas.None {
-		err := json.Unmarshal([]byte(schema), &s.inputSchema)
-		if err != nil {
-			panic(err)
-		}
-	}
 	return s
 }
 
-func (s *Scanner) SetParentDebugLogger(l debug.Logger) {
-	s.debug = l.Extend("rego")
-}
-
-func (s *Scanner) runQuery(ctx context.Context, query string, input interface{}, disableTracing bool) (rego.ResultSet, []string, error) {
+func (s *Scanner) runQuery(ctx context.Context, query string, input ast.Value, disableTracing bool) (rego.ResultSet, []string, error) {
 
 	trace := (s.traceWriter != nil || s.tracePerResult) && !disableTracing
 
@@ -173,18 +120,12 @@ func (s *Scanner) runQuery(ctx context.Context, query string, input interface{},
 		rego.Trace(trace),
 	}
 
-	if s.inputSchema != nil {
-		schemaSet := ast.NewSchemaSet()
-		schemaSet.Put(ast.MustParseRef("schema.input"), s.inputSchema)
-		regoOptions = append(regoOptions, rego.Schemas(schemaSet))
-	}
-
 	if input != nil {
-		regoOptions = append(regoOptions, rego.Input(input))
+		regoOptions = append(regoOptions, rego.ParsedInput(input))
 	}
 
 	instance := rego.New(regoOptions...)
-	set, err := instance.Eval(ctx)
+	resultSet, err := instance.Eval(ctx)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -202,13 +143,16 @@ func (s *Scanner) runQuery(ctx context.Context, query string, input interface{},
 			traces = strings.Split(traceBuffer.String(), "\n")
 		}
 	}
-	return set, traces, nil
+	return resultSet, traces, nil
 }
 
 type Input struct {
-	Path     string      `json:"path"`
-	FS       fs.FS       `json:"-"`
-	Contents interface{} `json:"contents"`
+	Path     string `json:"path"`
+	FS       fs.FS  `json:"-"`
+	Contents any    `json:"contents"`
+
+	// parsed is the parsed input value for the rego query
+	parsed ast.Value
 }
 
 func GetInputsContents(inputs []Input) []any {
@@ -219,14 +163,28 @@ func GetInputsContents(inputs []Input) []any {
 	return results
 }
 
-func (s *Scanner) ScanInput(ctx context.Context, inputs ...Input) (scan.Results, error) {
+func (s *Scanner) ScanInput(ctx context.Context, sourceType types.Source, inputs ...Input) (scan.Results, error) {
 
-	s.debug.Log("Scanning %d inputs...", len(inputs))
+	s.logger.Debug("Scanning inputs", "count", len(inputs))
+
+	if len(inputs) == 0 {
+		return nil, nil
+	}
+
+	inputs = lo.FilterMap(inputs, func(input Input, _ int) (Input, bool) {
+		s.trace("INPUT", input)
+		parsed, err := parseRawInput(input.Contents)
+		if err != nil {
+			s.logger.Error("Failed to parse input", log.FilePath(input.Path), log.Err(err))
+			return input, false
+		}
+		input.parsed = parsed
+		return input, true
+	})
 
 	var results scan.Results
 
-	for _, module := range s.policies {
-
+	for path, module := range s.policies {
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
@@ -235,44 +193,47 @@ func (s *Scanner) ScanInput(ctx context.Context, inputs ...Input) (scan.Results,
 
 		namespace := getModuleNamespace(module)
 		topLevel := strings.Split(namespace, ".")[0]
-		if _, ok := s.ruleNamespaces[topLevel]; !ok {
+		if !s.ruleNamespaces.Contains(topLevel) {
 			continue
 		}
 
-		staticMeta, err := s.retriever.RetrieveMetadata(ctx, module, GetInputsContents(inputs)...)
+		staticMeta, err := s.metadataForModule(ctx, path, module, inputs)
 		if err != nil {
-			s.debug.Log(
-				"Error occurred while retrieving metadata from check %q: %s",
-				module.Package.Location.File, err)
+			s.logger.Error(
+				"Error occurred while retrieving metadata from check",
+				log.FilePath(module.Package.Location.File),
+				log.Err(err),
+			)
 			continue
 		}
 
-		if isPolicyWithSubtype(s.sourceType) {
-			// skip if check isn't relevant to what is being scanned
-			if !isPolicyApplicable(staticMeta, inputs...) {
-				continue
-			}
+		if !s.includeDeprecatedChecks && staticMeta.Deprecated {
+			continue // skip deprecated checks
 		}
 
-		if len(inputs) == 0 {
+		// skip if check isn't relevant to what is being scanned
+		if !isPolicyApplicable(sourceType, staticMeta, inputs...) {
 			continue
 		}
 
-		usedRules := make(map[string]struct{})
+		usedRules := set.New[string]()
 
 		// all rules
 		for _, rule := range module.Rules {
 			ruleName := rule.Head.Name.String()
-			if _, ok := usedRules[ruleName]; ok {
+			if usedRules.Contains(ruleName) {
 				continue
 			}
-			usedRules[ruleName] = struct{}{}
+			usedRules.Append(ruleName)
 			if isEnforcedRule(ruleName) {
-				ruleResults, err := s.applyRule(ctx, namespace, ruleName, inputs, staticMeta.InputOptions.Combined)
+				ruleResults, err := s.applyRule(ctx, namespace, ruleName, inputs)
 				if err != nil {
-					s.debug.Log(
-						"Error occurred while applying rule %q from check %q: %s",
-						ruleName, module.Package.Location.File, err)
+					s.logger.Error(
+						"Error occurred while applying rule from check",
+						log.String("rule", ruleName),
+						log.FilePath(module.Package.Location.File),
+						log.Err(err),
+					)
 					continue
 				}
 				results = append(results, s.embellishResultsWithRuleMetadata(ruleResults, *staticMeta)...)
@@ -284,27 +245,37 @@ func (s *Scanner) ScanInput(ctx context.Context, inputs ...Input) (scan.Results,
 	return results, nil
 }
 
-func isPolicyWithSubtype(sourceType types.Source) bool {
-	for _, s := range []types.Source{types.SourceCloud, types.SourceDefsec, types.SourceKubernetes} {
-		if sourceType == s {
-			return true
-		}
+func (s *Scanner) metadataForModule(
+	ctx context.Context, path string, module *ast.Module, inputs []Input,
+) (*StaticMetadata, error) {
+	if metadata, exists := s.moduleMetadata[path]; exists {
+		return metadata, nil
 	}
-	return false
+
+	metadata, err := s.retriever.RetrieveMetadata(ctx, module, GetInputsContents(inputs)...)
+	if err != nil {
+		return nil, err
+	}
+	return metadata, nil
 }
 
-func checkSubtype(ii map[string]interface{}, provider string, subTypes []SubType) bool {
+func isPolicyWithSubtype(sourceType types.Source) bool {
+	return checkTypesWithSubtype.Contains(sourceType)
+}
+
+func checkSubtype(ii map[string]any, provider string, subTypes []SubType) bool {
 	if len(subTypes) == 0 {
 		return true
 	}
 
 	for _, st := range subTypes {
 		switch services := ii[provider].(type) {
-		case map[string]interface{}: // cloud
-			for service := range services {
-				if (service == st.Service) && (st.Provider == provider) {
-					return true
-				}
+		case map[string]any:
+			if st.Provider != provider {
+				continue
+			}
+			if _, exists := services[st.Service]; exists {
+				return true
 			}
 		case string: // k8s - logic can be improved
 			if strings.EqualFold(services, st.Group) ||
@@ -317,17 +288,36 @@ func checkSubtype(ii map[string]interface{}, provider string, subTypes []SubType
 	return false
 }
 
-func isPolicyApplicable(staticMetadata *StaticMetadata, inputs ...Input) bool {
-	for _, input := range inputs {
-		if ii, ok := input.Contents.(map[string]interface{}); ok {
-			for provider := range ii {
-				// TODO(simar): Add other providers
-				if !strings.Contains(strings.Join([]string{"kind", "aws", "azure"}, ","), provider) {
-					continue
-				}
+var sourcesWithExplicitSelectors = []types.Source{
+	// apply terrafrom-specific checks only if selectors exist
+	types.SourceTerraformRaw,
+}
 
-				if len(staticMetadata.InputOptions.Selectors) == 0 { // check always applies if no selectors
-					return true
+func isPolicyApplicable(sourceType types.Source, staticMetadata *StaticMetadata, inputs ...Input) bool {
+	if len(staticMetadata.InputOptions.Selectors) == 0 &&
+		slices.Contains(sourcesWithExplicitSelectors, sourceType) {
+		return false
+	}
+
+	if len(staticMetadata.InputOptions.Selectors) == 0 { // check always applies if no selectors
+		return true
+	}
+
+	for _, selector := range staticMetadata.InputOptions.Selectors {
+		if selector.Type != string(sourceType) {
+			return false
+		}
+	}
+
+	if !isPolicyWithSubtype(sourceType) {
+		return true
+	}
+
+	for _, input := range inputs {
+		if ii, ok := input.Contents.(map[string]any); ok {
+			for provider := range ii {
+				if !supportedProviders.Contains(provider) {
+					continue
 				}
 
 				// check metadata for subtype
@@ -342,34 +332,25 @@ func isPolicyApplicable(staticMetadata *StaticMetadata, inputs ...Input) bool {
 	return false
 }
 
-func (s *Scanner) applyRule(ctx context.Context, namespace, rule string, inputs []Input, combined bool) (scan.Results, error) {
-
-	// handle combined evaluations if possible
-	if combined {
-		s.trace("INPUT", inputs)
-		return s.applyRuleCombined(ctx, namespace, rule, inputs)
+func parseRawInput(input any) (ast.Value, error) {
+	if err := util.RoundTrip(&input); err != nil {
+		return nil, err
 	}
 
+	return ast.InterfaceToValue(input)
+}
+
+func (s *Scanner) applyRule(ctx context.Context, namespace, rule string, inputs []Input) (scan.Results, error) {
 	var results scan.Results
 	qualified := fmt.Sprintf("data.%s.%s", namespace, rule)
 	for _, input := range inputs {
-		s.trace("INPUT", input)
-		if ignored, err := s.isIgnored(ctx, namespace, rule, input.Contents); err != nil {
-			return nil, err
-		} else if ignored {
-			var result regoResult
-			result.FS = input.FS
-			result.Filepath = input.Path
-			result.Managed = true
-			results.AddIgnored(result)
-			continue
-		}
-		set, traces, err := s.runQuery(ctx, qualified, input.Contents, false)
+
+		resultSet, traces, err := s.runQuery(ctx, qualified, input.parsed, false)
 		if err != nil {
 			return nil, err
 		}
-		s.trace("RESULTSET", set)
-		ruleResults := s.convertResults(set, input, namespace, rule, traces)
+		s.trace("RESULTSET", resultSet)
+		ruleResults := s.convertResults(resultSet, input, namespace, rule, traces)
 		if len(ruleResults) == 0 { // It passed because we didn't find anything wrong (NOT because it didn't exist)
 			var result regoResult
 			result.FS = input.FS
@@ -384,37 +365,10 @@ func (s *Scanner) applyRule(ctx context.Context, namespace, rule string, inputs 
 	return results, nil
 }
 
-func (s *Scanner) applyRuleCombined(ctx context.Context, namespace, rule string, inputs []Input) (scan.Results, error) {
-	if len(inputs) == 0 {
-		return nil, nil
-	}
-	var results scan.Results
-	qualified := fmt.Sprintf("data.%s.%s", namespace, rule)
-	if ignored, err := s.isIgnored(ctx, namespace, rule, inputs); err != nil {
-		return nil, err
-	} else if ignored {
-		for _, input := range inputs {
-			var result regoResult
-			result.FS = input.FS
-			result.Filepath = input.Path
-			result.Managed = true
-			results.AddIgnored(result)
-		}
-		return results, nil
-	}
-	set, traces, err := s.runQuery(ctx, qualified, inputs, false)
-	if err != nil {
-		return nil, err
-	}
-	return s.convertResults(set, inputs[0], namespace, rule, traces), nil
-}
-
 // severity is now set with metadata, so deny/warn/violation now behave the same way
 func isEnforcedRule(name string) bool {
 	switch {
-	case name == "deny", strings.HasPrefix(name, "deny_"),
-		name == "warn", strings.HasPrefix(name, "warn_"),
-		name == "violation", strings.HasPrefix(name, "violation_"):
+	case name == "deny", strings.HasPrefix(name, "deny_"):
 		return true
 	}
 	return false

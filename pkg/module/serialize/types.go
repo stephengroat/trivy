@@ -1,11 +1,10 @@
 package serialize
 
 import (
-	"github.com/aquasecurity/trivy/pkg/types"
+	ftypes "github.com/aquasecurity/trivy/pkg/fanal/types"
 )
 
-type StringSlice []string
-
+// TODO: replace with analyzer.AnalysisResult
 type AnalysisResult struct {
 	// TODO: support other fields as well
 	// OS                   *types.OS
@@ -16,13 +15,7 @@ type AnalysisResult struct {
 	// SystemInstalledFiles []string // A list of files installed by OS package manager
 
 	// Currently it supports custom resources only
-	CustomResources []CustomResource
-}
-
-type CustomResource struct {
-	Type     string
-	FilePath string
-	Data     interface{}
+	CustomResources []ftypes.CustomResource
 }
 
 type PostScanAction string
@@ -36,7 +29,3 @@ type PostScanSpec struct {
 	// When the action is UPDATE, the matched result will be passed to the module.
 	IDs []string
 }
-
-type Results []Result
-
-type Result types.Result

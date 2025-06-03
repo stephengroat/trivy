@@ -1,8 +1,6 @@
 package sql
 
 import (
-	"strings"
-
 	iacTypes "github.com/aquasecurity/trivy/pkg/iac/types"
 )
 
@@ -66,13 +64,10 @@ type Backups struct {
 type IPConfiguration struct {
 	Metadata           iacTypes.Metadata
 	RequireTLS         iacTypes.BoolValue
+	SSLMode            iacTypes.StringValue
 	EnableIPv4         iacTypes.BoolValue
 	AuthorizedNetworks []struct {
 		Name iacTypes.StringValue
 		CIDR iacTypes.StringValue
 	}
-}
-
-func (i *DatabaseInstance) DatabaseFamily() string {
-	return strings.Split(i.DatabaseVersion.Value(), "_")[0]
 }

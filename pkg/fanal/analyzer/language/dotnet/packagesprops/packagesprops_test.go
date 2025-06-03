@@ -1,7 +1,6 @@
 package packagesprops
 
 import (
-	"context"
 	"os"
 	"testing"
 
@@ -27,7 +26,7 @@ func Test_packagesPropsAnalyzer_Analyze(t *testing.T) {
 					{
 						Type:     types.PackagesProps,
 						FilePath: "testdata/Packages.props",
-						Libraries: types.Packages{
+						Packages: types.Packages{
 							{
 								ID:      "Package1@22.1.4",
 								Name:    "Package1",
@@ -51,7 +50,7 @@ func Test_packagesPropsAnalyzer_Analyze(t *testing.T) {
 					{
 						Type:     types.PackagesProps,
 						FilePath: "testdata/Directory.Packages.props",
-						Libraries: types.Packages{
+						Packages: types.Packages{
 							{
 								ID:      "Package1@4.2.1",
 								Name:    "Package1",
@@ -80,7 +79,7 @@ func Test_packagesPropsAnalyzer_Analyze(t *testing.T) {
 			defer f.Close()
 
 			a := packagesPropsAnalyzer{}
-			ctx := context.Background()
+			ctx := t.Context()
 			got, err := a.Analyze(ctx, analyzer.AnalysisInput{
 				FilePath: tt.inputFile,
 				Content:  f,
@@ -91,7 +90,7 @@ func Test_packagesPropsAnalyzer_Analyze(t *testing.T) {
 				return
 			}
 
-			assert.NoError(t, err)
+			require.NoError(t, err)
 			assert.Equal(t, tt.want, got)
 		})
 	}

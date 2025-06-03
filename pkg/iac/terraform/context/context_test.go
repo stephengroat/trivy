@@ -52,6 +52,43 @@ func Test_ContextVariablesPreservation(t *testing.T) {
 
 }
 
+func Test_SetWithMerge(t *testing.T) {
+	hctx := hcl.EvalContext{
+		Variables: map[string]cty.Value{
+			"my": cty.ObjectVal(map[string]cty.Value{
+				"someValue": cty.ObjectVal(map[string]cty.Value{
+					"foo": cty.StringVal("test"),
+					"bar": cty.ObjectVal(map[string]cty.Value{
+						"foo": cty.StringVal("test"),
+					}),
+				}),
+			}),
+		},
+	}
+
+	ctx := NewContext(&hctx, nil)
+
+	val := cty.ObjectVal(map[string]cty.Value{
+		"foo2": cty.StringVal("test2"),
+		"bar": cty.ObjectVal(map[string]cty.Value{
+			"foo2": cty.StringVal("test2"),
+		}),
+	})
+
+	ctx.Set(val, "my", "someValue")
+	got := ctx.Get("my", "someValue")
+	expected := cty.ObjectVal(map[string]cty.Value{
+		"foo":  cty.StringVal("test"),
+		"foo2": cty.StringVal("test2"),
+		"bar": cty.ObjectVal(map[string]cty.Value{
+			"foo":  cty.StringVal("test"),
+			"foo2": cty.StringVal("test2"),
+		}),
+	})
+
+	assert.Equal(t, expected, got)
+}
+
 func Test_ContextVariablesPreservationByDot(t *testing.T) {
 
 	underlying := &hcl.EvalContext{}
@@ -230,7 +267,7 @@ func TestReplace(t *testing.T) {
 		assert.Equal(t, cty.NumberIntVal(-1), ctx.GetByDot("my.value"))
 	})
 
-	t.Run("empty path", func(t *testing.T) {
+	t.Run("empty path", func(_ *testing.T) {
 		underlying := &hcl.EvalContext{}
 		ctx := NewContext(underlying, nil)
 		ctx.Replace(cty.NumberIntVal(-1), "")

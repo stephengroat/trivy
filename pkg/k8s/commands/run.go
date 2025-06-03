@@ -3,6 +3,7 @@ package commands
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"github.com/spf13/viper"
 	"golang.org/x/xerrors"
@@ -18,6 +19,7 @@ import (
 	"github.com/aquasecurity/trivy/pkg/k8s/scanner"
 	"github.com/aquasecurity/trivy/pkg/log"
 	"github.com/aquasecurity/trivy/pkg/types"
+	"github.com/aquasecurity/trivy/pkg/version/doc"
 )
 
 // Run runs a k8s scan
@@ -39,7 +41,8 @@ func Run(ctx context.Context, args []string, opts flag.Options) error {
 	defer func() {
 		cancel()
 		if errors.Is(err, context.DeadlineExceeded) {
-			log.WarnContext(ctx, "Increase --timeout value")
+			// e.g. https://trivy.dev/latest/docs/configuration
+			log.WarnContext(ctx, fmt.Sprintf("Provide a higher timeout value, see %s", doc.URL("/docs/configuration/", "")))
 		}
 	}()
 	opts.K8sVersion = cluster.GetClusterVersion()
@@ -83,6 +86,7 @@ func (r *runner) run(ctx context.Context, artifacts []*k8sArtifacts.Artifact) er
 		r.flagOpts.ScanOptions.Scanners = scanners
 	}
 	var rpt report.Report
+	log.Info("Scanning K8s...", log.String("K8s", r.cluster))
 	rpt, err = s.Scan(ctx, artifacts)
 	if err != nil {
 		return xerrors.Errorf("k8s scan error: %w", err)
@@ -129,16 +133,11 @@ func (r *runner) run(ctx context.Context, artifacts []*k8sArtifacts.Artifact) er
 // even though the default value of "--report" is "all".
 //
 // e.g.
-// $ trivy k8s --report all cluster
-// $ trivy k8s --report all all
+// $ trivy k8s --report all
 //
 // Or they can use "--format json" with implicit "--report all".
 //
-// e.g. $ trivy k8s --format json cluster // All the results are shown in JSON
-//
-// Single resource scanning is allowed with implicit "--report all".
-//
-// e.g. $ trivy k8s pod myapp
+// e.g. $ trivy k8s --format json // All the results are shown in JSON
 func validateReportArguments(opts flag.Options) error {
 	if opts.ReportFormat == "all" &&
 		!viper.IsSet("report") &&

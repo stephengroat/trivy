@@ -4,13 +4,17 @@ import (
 	"context"
 	"sort"
 
+	"github.com/google/go-containerregistry/pkg/v1"
+
 	"github.com/aquasecurity/trivy/pkg/fanal/analyzer"
 	"github.com/aquasecurity/trivy/pkg/fanal/types"
 	"github.com/aquasecurity/trivy/pkg/fanal/walker"
 	"github.com/aquasecurity/trivy/pkg/misconf"
+	"github.com/aquasecurity/trivy/pkg/sbom/core"
 )
 
 type Option struct {
+	Type              types.ArtifactType
 	AnalyzerGroup     analyzer.Group // It is empty in OSS
 	DisabledAnalyzers []analyzer.Type
 	DisabledHandlers  []types.HandlerType
@@ -25,6 +29,11 @@ type Option struct {
 	AWSRegion         string
 	AWSEndpoint       string
 	FileChecksum      bool // For SPDX
+	DetectionPriority types.DetectionPriority
+
+	// Original is the original target location, e.g. "github.com/aquasecurity/trivy"
+	// Currently, it is used only for remote git repositories
+	Original string
 
 	// Git repositories
 	RepoBranch string
@@ -47,6 +56,7 @@ func (o *Option) AnalyzerOptions() analyzer.AnalyzerOptions {
 		FilePatterns:         o.FilePatterns,
 		Parallel:             o.Parallel,
 		DisabledAnalyzers:    o.DisabledAnalyzers,
+		DetectionPriority:    o.DetectionPriority,
 		MisconfScannerOption: o.MisconfScannerOption,
 		SecretScannerOption:  o.SecretScannerOption,
 		LicenseScannerOption: o.LicenseScannerOption,
@@ -72,6 +82,26 @@ func (o *Option) Sort() {
 }
 
 type Artifact interface {
-	Inspect(ctx context.Context) (reference types.ArtifactReference, err error)
-	Clean(reference types.ArtifactReference) error
+	Inspect(ctx context.Context) (reference Reference, err error)
+	Clean(reference Reference) error
+}
+
+// Reference represents a reference of container image, local filesystem and repository
+type Reference struct {
+	Name          string // image name, tar file name, directory or repository name
+	Type          types.ArtifactType
+	ID            string
+	BlobIDs       []string
+	ImageMetadata ImageMetadata
+
+	// SBOM
+	BOM *core.BOM
+}
+
+type ImageMetadata struct {
+	ID          string   // image ID
+	DiffIDs     []string // uncompressed layer IDs
+	RepoTags    []string
+	RepoDigests []string
+	ConfigFile  v1.ConfigFile
 }

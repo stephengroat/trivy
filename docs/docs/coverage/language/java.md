@@ -1,5 +1,5 @@
 # Java
-Trivy supports three types of Java scanning: `JAR/WAR/PAR/EAR`, `pom.xml` and `*gradle.lockfile` files.
+Trivy supports four types of Java scanning: `JAR/WAR/PAR/EAR`, `pom.xml`, `*gradle.lockfile` and `*.sbt.lock` files.
 
 Each artifact supports the following scanners:
 
@@ -8,14 +8,16 @@ Each artifact supports the following scanners:
 | JAR/WAR/PAR/EAR  |  ✓   |       ✓       |    -    |
 | pom.xml          |  ✓   |       ✓       |    ✓    |
 | *gradle.lockfile |  ✓   |       ✓       |    ✓    |
+| *.sbt.lock       |  ✓   |       ✓       |    -    |
 
 The following table provides an outline of the features Trivy offers.
 
-| Artifact         |    Internet access    | Dev dependencies | [Dependency graph][dependency-graph] | Position |
-|------------------|:---------------------:|:----------------:|:------------------------------------:|:--------:|
-| JAR/WAR/PAR/EAR  |     Trivy Java DB     |     Include      |                  -                   |    -     |
-| pom.xml          | Maven repository [^1] |     Exclude      |                  ✓                   |  ✓[^7]   |
-| *gradle.lockfile |           -           |     Exclude      |                  ✓                   |    ✓     |
+| Artifact         |    Internet access    |    Dev dependencies    | [Dependency graph][dependency-graph] | Position | [Detection Priority][detection-priority] |
+|------------------|:---------------------:|:----------------------:|:------------------------------------:|:--------:|:----------------------------------------:|
+| JAR/WAR/PAR/EAR  |     Trivy Java DB     |        Include         |                  -                   |    -     |                Not needed                |
+| pom.xml          | Maven repository [^1] |        Exclude         |                  ✓                   |  ✓[^7]   |                    -                     |
+| *gradle.lockfile |           -           | [Exclude](#gradlelock) |                  ✓                   |    ✓     |                Not needed                |
+| *.sbt.lock       |           -           |        Exclude         |                  -                   |    ✓     |                Not needed                |
 
 These may be enabled or disabled depending on the target.
 See [here](./index.md) for the detail.
@@ -58,7 +60,7 @@ Trivy reproduces Maven's repository selection and priority:
 
 !!! Note
     Trivy only takes information about packages. We don't take a list of vulnerabilities for packages from the `maven repository`.
-    Information about data sources for Java you can see [here](../../scanner/vulnerability.md#data-sources-1).
+    Information about data sources for Java you can see [here](../../scanner/vulnerability.md#langpkg-data-sources).
 
 You can disable connecting to the maven repository with the `--offline-scan` flag.
 The `--offline-scan` flag does not affect the Trivy database.
@@ -67,6 +69,19 @@ The vulnerability database will be downloaded anyway.
 !!! Warning
     Trivy may skip some dependencies (that were not found on your local machine) when the `--offline-scan` flag is passed.
 
+### supported scopes
+Trivy only scans `import`, `compile`, `runtime` and empty [maven scopes][maven-scopes]. Other scopes and `Optional` dependencies are not currently being analyzed.
+
+### empty dependency version
+There are cases when Trivy cannot determine the version of dependencies:
+
+- Unable to determine the version from the parent because the parent is not reachable;
+- The dependency uses a [hard requirement][version-requirement] with more than one version.
+
+In these cases, Trivy uses an empty version for the dependency.
+
+!!! Warning
+    Trivy doesn't detect child dependencies for dependencies without a version.
 
 ### maven-invoker-plugin
 Typically, the integration tests directory (`**/[src|target]/it/*/pom.xml`) of [maven-invoker-plugin][maven-invoker-plugin] doesn't contain actual `pom.xml` files and should be skipped to avoid noise.
@@ -81,6 +96,9 @@ If you need to show them, use the `--include-dev-deps` flag.
 !!!note
     All necessary files are checked locally. Gradle file scanning doesn't require internet access.
 
+By default, Trivy doesn't report development dependencies. 
+Use the `--include-dev-deps` flag to include them in the results.
+
 ### Dependency-tree
 !!! warning "EXPERIMENTAL"
     This feature might change without preserving backwards compatibility.
@@ -90,9 +108,18 @@ But there is no reliable way to determine direct dependencies (even using other 
 Therefore, we mark all dependencies as indirect to use logic to guess direct dependencies and build a dependency tree.
 
 ### Licenses
-Trity also can detect licenses for dependencies.
+Trivy also can detect licenses for dependencies.
 
 Make sure that you have cache[^8] directory to find licenses from `*.pom` dependency files.
+
+
+## SBT
+
+`build.sbt.lock` files only contain information about used dependencies. This requires a lockfile generated using the
+[sbt-dependency-lock][sbt-dependency-lock] plugin.
+
+!!!note
+    All necessary files are checked locally. SBT file scanning doesn't require internet access.
 
 [^1]: Uses maven repository to get information about dependencies. Internet access required.
 [^2]: It means `*.jar`, `*.war`, `*.par` and `*.ear` file
@@ -107,3 +134,7 @@ Make sure that you have cache[^8] directory to find licenses from `*.pom` depend
 [maven-invoker-plugin]: https://maven.apache.org/plugins/maven-invoker-plugin/usage.html
 [maven-central]: https://repo.maven.apache.org/maven2/
 [maven-pom-repos]: https://maven.apache.org/settings.html#repositories
+[maven-scopes]: https://maven.apache.org/guides/introduction/introduction-to-dependency-mechanism.html#Dependency_Scope
+[sbt-dependency-lock]: https://stringbean.github.io/sbt-dependency-lock
+[detection-priority]: ../../scanner/vulnerability.md#detection-priority
+[version-requirement]: https://maven.apache.org/pom.html#dependency-version-requirement-specification

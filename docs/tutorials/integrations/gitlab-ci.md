@@ -85,8 +85,6 @@ container_scanning:
     FULL_IMAGE_NAME: $CI_REGISTRY_IMAGE:$CI_COMMIT_REF_SLUG
   script:
     - trivy --version
-    # cache cleanup is needed when scanning images with the same tags, it does not remove the database
-    - time trivy image --clear-cache
     # update vulnerabilities db
     - time trivy image --download-db-only
     # Builds report and puts it in the default workdir $CI_PROJECT_DIR, so `artifacts:` can take it from there
@@ -116,7 +114,7 @@ container_scanning:
 Depending on the edition of gitlab you have or your desired workflow, the
 container scanning template may not meet your needs. As an addition to the
 above container scanning template, a template for
-[code climate](https://docs.gitlab.com/ee/user/project/merge_requests/code_quality.html)
+[code climate](https://docs.gitlab.com/ee/ci/testing/code_quality.html)
 has been included. The key things to update from the above examples are
 the `template` and `report` type. An updated example is below.
 

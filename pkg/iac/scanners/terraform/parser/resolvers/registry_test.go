@@ -4,11 +4,12 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func Test_getPrivateRegistryTokenFromEnvVars_ErrorsWithNoEnvVarSet(t *testing.T) {
 	token, err := getPrivateRegistryTokenFromEnvVars("registry.example.com")
-	assert.Equal(t, "", token)
+	assert.Empty(t, token)
 	assert.Equal(t, "no token was found for the registry at registry.example.com", err.Error())
 }
 
@@ -50,7 +51,7 @@ func Test_getPrivateRegistryTokenFromEnvVars_ConvertsSiteNameToEnvVar(t *testing
 			t.Setenv(tt.tokenName, "abcd")
 			token, err := getPrivateRegistryTokenFromEnvVars(tt.siteName)
 			assert.Equal(t, "abcd", token)
-			assert.Equal(t, nil, err)
+			require.NoError(t, err)
 		})
 	}
 }

@@ -1,21 +1,21 @@
 package scanner
 
 import (
-	"context"
-	"github.com/aquasecurity/trivy/pkg/sbom/core"
-	"github.com/aquasecurity/trivy/pkg/uuid"
-	"github.com/stretchr/testify/require"
-	"golang.org/x/exp/maps"
 	"sort"
 	"testing"
 
 	"github.com/package-url/packageurl-go"
+	"github.com/samber/lo"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/aquasecurity/trivy-kubernetes/pkg/artifacts"
 	cmd "github.com/aquasecurity/trivy/pkg/commands/artifact"
+	ftypes "github.com/aquasecurity/trivy/pkg/fanal/types"
 	"github.com/aquasecurity/trivy/pkg/flag"
 	"github.com/aquasecurity/trivy/pkg/purl"
+	"github.com/aquasecurity/trivy/pkg/sbom/core"
+	"github.com/aquasecurity/trivy/pkg/uuid"
 )
 
 func TestScanner_Scan(t *testing.T) {
@@ -34,7 +34,7 @@ func TestScanner_Scan(t *testing.T) {
 					Namespace: "kube-system",
 					Kind:      "Cluster",
 					Name:      "k8s.io/kubernetes",
-					RawResource: map[string]interface{}{
+					RawResource: map[string]any{
 						"name":    "k8s.io/kubernetes",
 						"version": "1.21.1",
 						"type":    "ClusterInfo",
@@ -48,9 +48,9 @@ func TestScanner_Scan(t *testing.T) {
 					Namespace: "kube-system",
 					Kind:      "ControlPlaneComponents",
 					Name:      "k8s.io/apiserver",
-					RawResource: map[string]interface{}{
-						"Containers": []interface{}{
-							map[string]interface{}{
+					RawResource: map[string]any{
+						"Containers": []any{
+							map[string]any{
 								"Digest":     "18e61c783b41758dd391ab901366ec3546b26fae00eef7e223d1f94da808e02f",
 								"ID":         "kube-apiserver:v1.21.1",
 								"Registry":   "k8s.gcr.io",
@@ -65,7 +65,7 @@ func TestScanner_Scan(t *testing.T) {
 				{
 					Kind: "NodeComponents",
 					Name: "kind-control-plane",
-					RawResource: map[string]interface{}{
+					RawResource: map[string]any{
 						"ContainerRuntimeVersion": "containerd://1.5.2",
 						"Hostname":                "kind-control-plane",
 						"KubeProxyVersion":        "6.2.13-300.fc38.aarch64",
@@ -86,7 +86,7 @@ func TestScanner_Scan(t *testing.T) {
 				{
 					Type:    core.TypeApplication,
 					Name:    "github.com/containerd/containerd",
-					Version: "1.5.2",
+					Version: "v1.5.2",
 					Properties: []core.Property{
 						{
 							Name:      k8sComponentName,
@@ -99,33 +99,33 @@ func TestScanner_Scan(t *testing.T) {
 							Namespace: k8sCoreComponentNamespace,
 						},
 					},
-					PkgID: core.PkgID{
+					PkgIdentifier: ftypes.PkgIdentifier{
 						PURL: &packageurl.PackageURL{
 							Type:       "golang",
 							Name:       "github.com/containerd/containerd",
-							Version:    "1.5.2",
+							Version:    "v1.5.2",
 							Qualifiers: packageurl.Qualifiers{},
 						},
-						BOMRef: "pkg:golang/github.com%2Fcontainerd%2Fcontainerd@1.5.2",
+						BOMRef: "pkg:golang/github.com%2Fcontainerd%2Fcontainerd@v1.5.2",
 					},
 				},
 				{
 					Type:    core.TypeApplication,
 					Name:    "k8s.io/apiserver",
-					Version: "1.21.1",
-					PkgID: core.PkgID{
+					Version: "v1.21.1",
+					PkgIdentifier: ftypes.PkgIdentifier{
 						PURL: &packageurl.PackageURL{
 							Type:    purl.TypeK8s,
 							Name:    "k8s.io/apiserver",
-							Version: "1.21.1",
+							Version: "v1.21.1",
 						},
-						BOMRef: "pkg:k8s/k8s.io%2Fapiserver@1.21.1",
+						BOMRef: "pkg:k8s/k8s.io%2Fapiserver@v1.21.1",
 					},
 				},
 				{
 					Type:    core.TypeApplication,
 					Name:    "k8s.io/kubelet",
-					Version: "1.21.1",
+					Version: "v1.21.1",
 					Properties: []core.Property{
 						{
 							Name:      k8sComponentName,
@@ -138,19 +138,19 @@ func TestScanner_Scan(t *testing.T) {
 							Namespace: k8sCoreComponentNamespace,
 						},
 					},
-					PkgID: core.PkgID{
+					PkgIdentifier: ftypes.PkgIdentifier{
 						PURL: &packageurl.PackageURL{
 							Type:    "k8s",
 							Name:    "k8s.io/kubelet",
-							Version: "1.21.1",
+							Version: "v1.21.1",
 						},
-						BOMRef: "pkg:k8s/k8s.io%2Fkubelet@1.21.1",
+						BOMRef: "pkg:k8s/k8s.io%2Fkubelet@v1.21.1",
 					},
 				},
 				{
 					Type: core.TypeApplication,
 					Name: "node-core-components",
-					PkgID: core.PkgID{
+					PkgIdentifier: ftypes.PkgIdentifier{
 						BOMRef: "3ff14136-e09f-4df9-80ea-000000000006",
 					},
 				},
@@ -158,7 +158,7 @@ func TestScanner_Scan(t *testing.T) {
 					Type:    core.TypeContainerImage,
 					Name:    "k8s.gcr.io/kube-apiserver",
 					Version: "sha256:18e61c783b41758dd391ab901366ec3546b26fae00eef7e223d1f94da808e02f",
-					PkgID: core.PkgID{
+					PkgIdentifier: ftypes.PkgIdentifier{
 						PURL: &packageurl.PackageURL{
 							Type:    "oci",
 							Name:    "kube-apiserver",
@@ -175,7 +175,7 @@ func TestScanner_Scan(t *testing.T) {
 					Properties: []core.Property{
 						{
 							Name:  core.PropertyPkgID,
-							Value: "k8s.gcr.io/kube-apiserver:1.21.1",
+							Value: "k8s.gcr.io/kube-apiserver:v1.21.1",
 						},
 						{
 							Name:  core.PropertyPkgType,
@@ -199,7 +199,7 @@ func TestScanner_Scan(t *testing.T) {
 							Namespace: "",
 						},
 					},
-					PkgID: core.PkgID{
+					PkgIdentifier: ftypes.PkgIdentifier{
 						BOMRef: "3ff14136-e09f-4df9-80ea-000000000005",
 					},
 				},
@@ -207,7 +207,7 @@ func TestScanner_Scan(t *testing.T) {
 					Type:    core.TypePlatform,
 					Root:    true,
 					Name:    "k8s.io/kubernetes",
-					Version: "1.21.1",
+					Version: "v1.21.1",
 					Properties: []core.Property{
 						{
 							Name:      "Name",
@@ -220,13 +220,13 @@ func TestScanner_Scan(t *testing.T) {
 							Namespace: k8sCoreComponentNamespace,
 						},
 					},
-					PkgID: core.PkgID{
+					PkgIdentifier: ftypes.PkgIdentifier{
 						PURL: &packageurl.PackageURL{
 							Type:    purl.TypeK8s,
 							Name:    "k8s.io/kubernetes",
-							Version: "1.21.1",
+							Version: "v1.21.1",
 						},
-						BOMRef: "pkg:k8s/k8s.io%2Fkubernetes@1.21.1",
+						BOMRef: "pkg:k8s/k8s.io%2Fkubernetes@v1.21.1",
 					},
 				},
 				{
@@ -264,7 +264,7 @@ func TestScanner_Scan(t *testing.T) {
 							Namespace: k8sCoreComponentNamespace,
 						},
 					},
-					PkgID: core.PkgID{
+					PkgIdentifier: ftypes.PkgIdentifier{
 						BOMRef: "3ff14136-e09f-4df9-80ea-000000000004",
 					},
 				},
@@ -273,18 +273,18 @@ func TestScanner_Scan(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			ctx := context.Background()
+			ctx := t.Context()
 			uuid.SetFakeUUID(t, "3ff14136-e09f-4df9-80ea-%012d")
 
 			runner, err := cmd.NewRunner(ctx, flagOpts)
-			assert.NoError(t, err)
+			require.NoError(t, err)
 
 			scanner := NewScanner(tt.clusterName, runner, flagOpts)
 			got, err := scanner.Scan(ctx, tt.artifacts)
 			require.NoError(t, err)
 
-			gotComponents := maps.Values(got.BOM.Components())
-			require.Equal(t, len(tt.wantComponents), len(gotComponents))
+			gotComponents := lo.Values(got.BOM.Components())
+			require.Len(t, gotComponents, len(tt.wantComponents))
 
 			sort.Slice(gotComponents, func(i, j int) bool {
 				switch {
@@ -463,19 +463,19 @@ func TestRuntimeVersion(t *testing.T) {
 			name:           "containerd",
 			runtimeVersion: "containerd://1.5.2",
 			wantName:       "github.com/containerd/containerd",
-			wantVersion:    "1.5.2",
+			wantVersion:    "v1.5.2",
 		},
 		{
 			name:           "cri-o",
 			runtimeVersion: "cri-o://1.5.2",
 			wantName:       "github.com/cri-o/cri-o",
-			wantVersion:    "1.5.2",
+			wantVersion:    "v1.5.2",
 		},
 		{
 			name:           "cri-dockerd",
 			runtimeVersion: "cri-dockerd://1.5.2",
 			wantName:       "github.com/Mirantis/cri-dockerd",
-			wantVersion:    "1.5.2",
+			wantVersion:    "v1.5.2",
 		},
 		{
 			name:           "na runtime",
@@ -506,18 +506,18 @@ func TestFindNodeName(t *testing.T) {
 					Namespace:   "kube-system",
 					Kind:        "Cluster",
 					Name:        "k8s.io/kubernetes",
-					RawResource: map[string]interface{}{},
+					RawResource: make(map[string]any),
 				},
 				{
 					Namespace:   "kube-system",
 					Kind:        "ControlPlaneComponents",
 					Name:        "k8s.io/apiserver",
-					RawResource: map[string]interface{}{},
+					RawResource: make(map[string]any),
 				},
 				{
 					Kind:        "NodeComponents",
 					Name:        "kind-control-plane",
-					RawResource: map[string]interface{}{},
+					RawResource: make(map[string]any),
 				},
 			},
 			want: "kind-control-plane",
@@ -529,13 +529,13 @@ func TestFindNodeName(t *testing.T) {
 					Namespace:   "kube-system",
 					Kind:        "Cluster",
 					Name:        "k8s.io/kubernetes",
-					RawResource: map[string]interface{}{},
+					RawResource: make(map[string]any),
 				},
 				{
 					Namespace:   "kube-system",
 					Kind:        "ControlPlaneComponents",
 					Name:        "k8s.io/apiserver",
-					RawResource: map[string]interface{}{},
+					RawResource: make(map[string]any),
 				},
 			},
 			want: "",

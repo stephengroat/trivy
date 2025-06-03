@@ -8,15 +8,16 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/samber/lo"
 	"golang.org/x/xerrors"
 
 	"github.com/aquasecurity/trivy/pkg/dependency/parser/python/poetry"
 	"github.com/aquasecurity/trivy/pkg/dependency/parser/python/pyproject"
-	godeptypes "github.com/aquasecurity/trivy/pkg/dependency/types"
 	"github.com/aquasecurity/trivy/pkg/fanal/analyzer"
 	"github.com/aquasecurity/trivy/pkg/fanal/analyzer/language"
 	"github.com/aquasecurity/trivy/pkg/fanal/types"
 	"github.com/aquasecurity/trivy/pkg/log"
+	"github.com/aquasecurity/trivy/pkg/set"
 	"github.com/aquasecurity/trivy/pkg/utils/fsutils"
 )
 
@@ -29,7 +30,7 @@ const version = 1
 type poetryAnalyzer struct {
 	logger          *log.Logger
 	pyprojectParser *pyproject.Parser
-	lockParser      godeptypes.Parser
+	lockParser      language.Parser
 }
 
 func newPoetryAnalyzer(_ analyzer.AnalyzerOptions) (analyzer.PostAnalyzer, error) {
@@ -43,11 +44,11 @@ func newPoetryAnalyzer(_ analyzer.AnalyzerOptions) (analyzer.PostAnalyzer, error
 func (a poetryAnalyzer) PostAnalyze(_ context.Context, input analyzer.PostAnalysisInput) (*analyzer.AnalysisResult, error) {
 	var apps []types.Application
 
-	required := func(path string, d fs.DirEntry) bool {
-		return filepath.Base(path) == types.PoetryLock
+	required := func(path string, _ fs.DirEntry) bool {
+		return filepath.Base(path) == types.PoetryLock || input.FilePatterns.Match(path)
 	}
 
-	err := fsutils.WalkDir(input.FS, ".", required, func(path string, d fs.DirEntry, r io.Reader) error {
+	err := fsutils.WalkDir(input.FS, ".", required, func(path string, _ fs.DirEntry, r io.Reader) error {
 		// Parse poetry.lock
 		app, err := a.parsePoetryLock(path, r)
 		if err != nil {
@@ -59,7 +60,7 @@ func (a poetryAnalyzer) PostAnalyze(_ context.Context, input analyzer.PostAnalys
 		// Parse pyproject.toml alongside poetry.lock to identify the direct dependencies
 		if err = a.mergePyProject(input.FS, filepath.Dir(path), app); err != nil {
 			a.logger.Warn("Unable to parse pyproject.toml to identify direct dependencies",
-				log.String("path", filepath.Join(filepath.Dir(path), types.PyProject)), log.Err(err))
+				log.FilePath(filepath.Join(filepath.Dir(path), types.PyProject)), log.Err(err))
 		}
 		apps = append(apps, *app)
 
@@ -94,39 +95,78 @@ func (a poetryAnalyzer) parsePoetryLock(path string, r io.Reader) (*types.Applic
 func (a poetryAnalyzer) mergePyProject(fsys fs.FS, dir string, app *types.Application) error {
 	// Parse pyproject.toml to identify the direct dependencies
 	path := filepath.Join(dir, types.PyProject)
-	p, err := a.parsePyProject(fsys, path)
+	project, err := a.parsePyProject(fsys, path)
 	if errors.Is(err, fs.ErrNotExist) {
 		// Assume all the packages are direct dependencies as it cannot identify them from poetry.lock
-		a.logger.Debug("pyproject.toml not found", log.String("path", path))
+		a.logger.Debug("pyproject.toml not found", log.FilePath(path))
 		return nil
 	} else if err != nil {
 		return xerrors.Errorf("unable to parse %s: %w", path, err)
 	}
 
-	for i, lib := range app.Libraries {
-		// Identify the direct/transitive dependencies
-		if _, ok := p[lib.Name]; ok {
-			app.Libraries[i].Relationship = types.RelationshipDirect
+	dirDeps := directDeps(project)
+	prodDeps := prodPackages(app, project.MainDeps())
+
+	// Identify the direct/transitive/dev dependencies
+	for i, pkg := range app.Packages {
+		app.Packages[i].Dev = !prodDeps.Contains(pkg.ID) || app.Packages[i].Dev
+		if dirDeps.Contains(pkg.Name) {
+			app.Packages[i].Relationship = types.RelationshipDirect
 		} else {
-			app.Libraries[i].Indirect = true
-			app.Libraries[i].Relationship = types.RelationshipIndirect
+			app.Packages[i].Indirect = true
+			app.Packages[i].Relationship = types.RelationshipIndirect
 		}
 	}
-
 	return nil
 }
 
-func (a poetryAnalyzer) parsePyProject(fsys fs.FS, path string) (map[string]interface{}, error) {
+func directDeps(project pyproject.PyProject) set.Set[string] {
+	deps := project.MainDeps()
+	for _, groupDeps := range project.Tool.Poetry.Groups {
+		deps.Append(groupDeps.Dependencies.Items()...)
+	}
+	return deps
+}
+
+func prodPackages(app *types.Application, prodRootDeps set.Set[string]) set.Set[string] {
+	packages := lo.SliceToMap(app.Packages, func(pkg types.Package) (string, types.Package) {
+		return pkg.ID, pkg
+	})
+
+	visited := set.New[string]()
+
+	for _, pkg := range packages {
+		if !prodRootDeps.Contains(pkg.Name) {
+			continue
+		}
+		walkPackageDeps(pkg.ID, packages, visited)
+	}
+
+	return visited
+}
+
+func walkPackageDeps(pkgID string, packages map[string]types.Package, visited set.Set[string]) {
+	if visited.Contains(pkgID) {
+		return
+	}
+	visited.Append(pkgID)
+	for _, dep := range packages[pkgID].DependsOn {
+		walkPackageDeps(dep, packages, visited)
+	}
+}
+
+func (a poetryAnalyzer) parsePyProject(fsys fs.FS, path string) (pyproject.PyProject, error) {
 	// Parse pyproject.toml
 	f, err := fsys.Open(path)
 	if err != nil {
-		return nil, xerrors.Errorf("file open error: %w", err)
+		return pyproject.PyProject{}, xerrors.Errorf("file open error: %w", err)
 	}
 	defer f.Close()
 
-	parsed, err := a.pyprojectParser.Parse(f)
+	project, err := a.pyprojectParser.Parse(f)
 	if err != nil {
-		return nil, err
+		return pyproject.PyProject{}, err
 	}
-	return parsed, nil
+
+	return project, nil
 }

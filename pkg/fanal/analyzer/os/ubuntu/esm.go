@@ -4,8 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"slices"
 
-	"golang.org/x/exp/slices"
 	"golang.org/x/xerrors"
 
 	"github.com/aquasecurity/trivy/pkg/fanal/analyzer"
@@ -57,6 +57,11 @@ func (a ubuntuESMAnalyzer) Type() analyzer.Type {
 
 func (a ubuntuESMAnalyzer) Version() int {
 	return ESMAnalyzerVersion
+}
+
+// StaticPaths returns the static paths of the ubuntu ESM analyzer
+func (a ubuntuESMAnalyzer) StaticPaths() []string {
+	return ESMRequiredFiles
 }
 
 // structs to parse ESM status

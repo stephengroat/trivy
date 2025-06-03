@@ -22,8 +22,7 @@
       "Type": "dockerfile",
       "MisconfSummary": {
         "Successes": 26,
-        "Failures": 1,
-        "Exceptions": 0
+        "Failures": 1
       },
       "Misconfigurations": [
         {
@@ -49,7 +48,8 @@
             "Service": "general",
             "Code": {
               "Lines": null
-            }
+            },
+            "RenderedCause": {}
           }
         }
       ]

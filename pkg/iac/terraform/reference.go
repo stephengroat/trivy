@@ -1,6 +1,7 @@
 package terraform
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/zclconf/go-cty/cty"
@@ -30,7 +31,7 @@ func newReference(parts []string, parentKey string) (*Reference, error) {
 	var ref Reference
 
 	if len(parts) == 0 {
-		return nil, fmt.Errorf("cannot create empty reference")
+		return nil, errors.New("cannot create empty reference")
 	}
 
 	blockType, err := TypeFromRefName(parts[0])
@@ -160,7 +161,7 @@ func (r Reference) Key() string {
 	return fmt.Sprintf("%v", key(r))
 }
 
-func key(r Reference) interface{} {
+func key(r Reference) any {
 	if r.key.IsNull() || !r.key.IsKnown() {
 		return ""
 	}

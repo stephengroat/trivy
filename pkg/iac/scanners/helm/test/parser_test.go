@@ -1,16 +1,16 @@
 package test
 
 import (
-	"context"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
-	"github.com/aquasecurity/trivy/pkg/iac/detection"
-	"github.com/aquasecurity/trivy/pkg/iac/scanners/helm/parser"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/aquasecurity/trivy/pkg/iac/detection"
+	"github.com/aquasecurity/trivy/pkg/iac/scanners/helm/parser"
 )
 
 func Test_helm_parser(t *testing.T) {
@@ -34,7 +34,7 @@ func Test_helm_parser(t *testing.T) {
 			chartName := test.chartName
 			helmParser, err := parser.New(chartName)
 			require.NoError(t, err)
-			require.NoError(t, helmParser.ParseFS(context.TODO(), os.DirFS("testdata"), chartName))
+			require.NoError(t, helmParser.ParseFS(t.Context(), os.DirFS("testdata"), chartName))
 			manifests, err := helmParser.RenderedChartFiles()
 			require.NoError(t, err)
 
@@ -72,7 +72,7 @@ func Test_helm_parser_where_name_non_string(t *testing.T) {
 
 		helmParser, err := parser.New(chartName)
 		require.NoError(t, err)
-		require.NoError(t, helmParser.ParseFS(context.TODO(), os.DirFS(filepath.Join("testdata", chartName)), "."))
+		require.NoError(t, helmParser.ParseFS(t.Context(), os.DirFS(filepath.Join("testdata", chartName)), "."))
 	}
 }
 
@@ -111,16 +111,14 @@ func Test_tar_is_chart(t *testing.T) {
 	}
 
 	for _, test := range tests {
+		t.Run(test.testName, func(t *testing.T) {
+			testPath := filepath.Join("testdata", test.archiveFile)
+			file, err := os.Open(testPath)
+			require.NoError(t, err)
+			defer file.Close()
 
-		t.Logf("Running test: %s", test.testName)
-		testPath := filepath.Join("testdata", test.archiveFile)
-		file, err := os.Open(testPath)
-		defer func() { _ = file.Close() }()
-		require.NoError(t, err)
-
-		assert.Equal(t, test.isHelmChart, detection.IsHelmChartArchive(test.archiveFile, file))
-
-		_ = file.Close()
+			assert.Equal(t, test.isHelmChart, detection.IsHelmChartArchive(test.archiveFile, file))
+		})
 	}
 }
 
@@ -153,16 +151,11 @@ func Test_helm_tarball_parser(t *testing.T) {
 		t.Logf("Running test: %s", test.testName)
 
 		testPath := filepath.Join("testdata", test.archiveFile)
-
-		testTemp := t.TempDir()
-		testFileName := filepath.Join(testTemp, test.archiveFile)
-		require.NoError(t, copyArchive(testPath, testFileName))
-
-		testFs := os.DirFS(testTemp)
+		testFs := fsysForAcrhive(t, testPath)
 
 		helmParser, err := parser.New(test.archiveFile)
 		require.NoError(t, err)
-		require.NoError(t, helmParser.ParseFS(context.TODO(), testFs, "."))
+		require.NoError(t, helmParser.ParseFS(t.Context(), testFs, "."))
 
 		manifests, err := helmParser.RenderedChartFiles()
 		require.NoError(t, err)

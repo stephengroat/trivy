@@ -28,7 +28,7 @@ func Test_pomAnalyzer_Analyze(t *testing.T) {
 					{
 						Type:     types.Pom,
 						FilePath: "testdata/happy/pom.xml",
-						Libraries: types.Packages{
+						Packages: types.Packages{
 							{
 								ID:           "com.example:example:1.0.0",
 								Name:         "com.example:example",
@@ -65,7 +65,7 @@ func Test_pomAnalyzer_Analyze(t *testing.T) {
 					{
 						Type:     types.Pom,
 						FilePath: "pom.xml",
-						Libraries: types.Packages{
+						Packages: types.Packages{
 							{
 								ID:           "com.example:example:1.0.0",
 								Name:         "com.example:example",
@@ -101,7 +101,7 @@ func Test_pomAnalyzer_Analyze(t *testing.T) {
 					{
 						Type:     types.Pom,
 						FilePath: "testdata/mark-as-dev/src/it/example/pom.xml",
-						Libraries: types.Packages{
+						Packages: types.Packages{
 							{
 								ID:           "com.example:example:1.0.0",
 								Name:         "com.example:example",
@@ -139,13 +139,24 @@ func Test_pomAnalyzer_Analyze(t *testing.T) {
 					{
 						Type:     types.Pom,
 						FilePath: "testdata/requirements/pom.xml",
-						Libraries: types.Packages{
+						Packages: types.Packages{
 							{
 								ID:           "com.example:example:2.0.0",
 								Name:         "com.example:example",
 								Version:      "2.0.0",
 								Licenses:     []string{"Apache-2.0"},
 								Relationship: types.RelationshipRoot,
+							},
+							{
+								ID:           "org.example:example-api",
+								Name:         "org.example:example-api",
+								Relationship: types.RelationshipDirect,
+								Locations: []types.Location{
+									{
+										StartLine: 21,
+										EndLine:   25,
+									},
+								},
 							},
 						},
 					},
@@ -171,7 +182,7 @@ func Test_pomAnalyzer_Analyze(t *testing.T) {
 			defer f.Close()
 
 			a := pomAnalyzer{}
-			got, err := a.Analyze(nil, analyzer.AnalysisInput{
+			got, err := a.Analyze(t.Context(), analyzer.AnalysisInput{
 				Dir:      tt.inputDir,
 				FilePath: tt.inputFile,
 				Content:  f,
@@ -180,11 +191,10 @@ func Test_pomAnalyzer_Analyze(t *testing.T) {
 				},
 			})
 			if tt.wantErr != "" {
-				require.NotNil(t, err)
-				assert.Contains(t, err.Error(), tt.wantErr)
+				require.ErrorContains(t, err, tt.wantErr)
 				return
 			}
-			assert.NoError(t, err)
+			require.NoError(t, err)
 			assert.Equal(t, tt.want, got)
 		})
 	}

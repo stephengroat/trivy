@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -14,20 +16,21 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 	"github.com/spf13/viper"
-	"golang.org/x/exp/slices"
 	"golang.org/x/xerrors"
 
+	"github.com/aquasecurity/trivy/pkg/cache"
 	"github.com/aquasecurity/trivy/pkg/fanal/analyzer"
 	ftypes "github.com/aquasecurity/trivy/pkg/fanal/types"
 	"github.com/aquasecurity/trivy/pkg/log"
 	"github.com/aquasecurity/trivy/pkg/plugin"
 	"github.com/aquasecurity/trivy/pkg/result"
+	"github.com/aquasecurity/trivy/pkg/rpc/client"
 	"github.com/aquasecurity/trivy/pkg/types"
-	"github.com/aquasecurity/trivy/pkg/version"
+	"github.com/aquasecurity/trivy/pkg/version/app"
 )
 
 type FlagType interface {
-	int | string | []string | bool | time.Duration | float64
+	int | string | []string | bool | time.Duration | float64 | map[string][]string
 }
 
 type Flag[T FlagType] struct {
@@ -55,11 +58,20 @@ type Flag[T FlagType] struct {
 	// Usage explains how to use the flag.
 	Usage string
 
-	// Persistent represents if the flag is persistent
+	// Persistent represents if the flag is persistent.
 	Persistent bool
 
-	// Deprecated represents if the flag is deprecated
-	Deprecated bool
+	// Deprecated represents if the flag is deprecated.
+	// It shows a warning message when the flag is used.
+	Deprecated string
+
+	// Removed represents if the flag is removed and no longer works.
+	// It shows an error message when the flag is used.
+	Removed string
+
+	// Internal represents if the flag is for internal use only.
+	// It is not shown in the usage message.
+	Internal bool
 
 	// Aliases represents aliases
 	Aliases []Alias
@@ -107,6 +119,14 @@ func (f *Flag[T]) Parse() error {
 		return xerrors.Errorf(`invalid argument "%s" for "--%s" flag: must be one of %q`, value, f.Name, f.Values)
 	}
 
+	if f.Deprecated != "" && f.isSet() {
+		log.Warnf(`"--%s" is deprecated. %s`, f.Name, f.Deprecated)
+	}
+	if f.Removed != "" && f.isSet() {
+		log.Errorf(`"--%s" was removed. %s`, f.Name, f.Removed)
+		return xerrors.Errorf(`removed flag ("--%s")`, f.Name)
+	}
+
 	f.value = value
 	return nil
 }
@@ -141,6 +161,8 @@ func (f *Flag[T]) cast(val any) any {
 		return cast.ToFloat64(val)
 	case time.Duration:
 		return cast.ToDuration(val)
+	case map[string][]string:
+		return cast.ToStringMapStringSlice(val)
 	case []string:
 		if s, ok := val.(string); ok && strings.Contains(s, ",") {
 			// Split environmental variables by comma as it is not done by viper.
@@ -184,8 +206,20 @@ func (f *Flag[T]) GetName() string {
 	return f.Name
 }
 
+func (f *Flag[T]) GetConfigName() string {
+	return f.ConfigName
+}
+
+func (f *Flag[T]) GetDefaultValue() any {
+	return f.Default
+}
+
 func (f *Flag[T]) GetAliases() []Alias {
 	return f.Aliases
+}
+
+func (f *Flag[T]) Hidden() bool {
+	return f.Deprecated != "" || f.Removed != "" || f.Internal
 }
 
 func (f *Flag[T]) Value() (t T) {
@@ -212,13 +246,37 @@ func (f *Flag[T]) Add(cmd *cobra.Command) {
 	case string:
 		usage := f.Usage
 		if len(f.Values) > 0 {
-			usage += fmt.Sprintf(" (%s)", strings.Join(f.Values, ","))
+			if len(f.Values) <= 4 {
+				// Display inline for a small number of choices
+				usage += fmt.Sprintf(" (allowed values: %s)", strings.Join(f.Values, ","))
+			} else {
+				// Display as a bullet list for many choices
+				usage += "\nAllowed values:"
+				for _, val := range f.Values {
+					usage += fmt.Sprintf("\n  - %s", val)
+				}
+				if v != "" {
+					usage += "\n"
+				}
+			}
 		}
 		flags.StringP(f.Name, f.Shorthand, v, usage)
 	case []string:
 		usage := f.Usage
 		if len(f.Values) > 0 {
-			usage += fmt.Sprintf(" (%s)", strings.Join(f.Values, ","))
+			if len(f.Values) <= 4 {
+				// Display inline for a small number of choices
+				usage += fmt.Sprintf(" (allowed values: %s)", strings.Join(f.Values, ","))
+			} else {
+				// Display as a bullet list for many choices
+				usage += "\nAllowed values:"
+				for _, val := range f.Values {
+					usage += fmt.Sprintf("\n  - %s", val)
+				}
+				if len(v) != 0 {
+					usage += "\n"
+				}
+			}
 		}
 		flags.StringSliceP(f.Name, f.Shorthand, v, usage)
 	case bool:
@@ -229,8 +287,8 @@ func (f *Flag[T]) Add(cmd *cobra.Command) {
 		flags.Float64P(f.Name, f.Shorthand, v, f.Usage)
 	}
 
-	if f.Deprecated {
-		flags.MarkHidden(f.Name) // nolint: gosec
+	if f.Hidden() {
+		_ = flags.MarkHidden(f.Name)
 	}
 }
 
@@ -254,11 +312,7 @@ func (f *Flag[T]) Bind(cmd *cobra.Command) error {
 	}
 
 	// Bind environmental variable
-	if err := f.BindEnv(); err != nil {
-		return err
-	}
-
-	return nil
+	return f.BindEnv()
 }
 
 func (f *Flag[T]) BindEnv() error {
@@ -286,57 +340,41 @@ func (f *Flag[T]) BindEnv() error {
 type FlagGroup interface {
 	Name() string
 	Flags() []Flagger
+	ToOptions(*Options) error
 }
 
 type Flagger interface {
 	GetName() string
+	GetConfigName() string
+	GetDefaultValue() any
 	GetAliases() []Alias
+	Hidden() bool
 
 	Parse() error
 	Add(cmd *cobra.Command)
 	Bind(cmd *cobra.Command) error
 }
 
-type Flags struct {
-	GlobalFlagGroup        *GlobalFlagGroup
-	AWSFlagGroup           *AWSFlagGroup
-	CacheFlagGroup         *CacheFlagGroup
-	CloudFlagGroup         *CloudFlagGroup
-	DBFlagGroup            *DBFlagGroup
-	ImageFlagGroup         *ImageFlagGroup
-	K8sFlagGroup           *K8sFlagGroup
-	LicenseFlagGroup       *LicenseFlagGroup
-	MisconfFlagGroup       *MisconfFlagGroup
-	ModuleFlagGroup        *ModuleFlagGroup
-	RemoteFlagGroup        *RemoteFlagGroup
-	RegistryFlagGroup      *RegistryFlagGroup
-	RegoFlagGroup          *RegoFlagGroup
-	RepoFlagGroup          *RepoFlagGroup
-	ReportFlagGroup        *ReportFlagGroup
-	SBOMFlagGroup          *SBOMFlagGroup
-	ScanFlagGroup          *ScanFlagGroup
-	SecretFlagGroup        *SecretFlagGroup
-	VulnerabilityFlagGroup *VulnerabilityFlagGroup
-}
+type Flags []FlagGroup
 
 // Options holds all the runtime configuration
 type Options struct {
 	GlobalOptions
 	AWSOptions
 	CacheOptions
-	CloudOptions
+	CleanOptions
 	DBOptions
 	ImageOptions
 	K8sOptions
 	LicenseOptions
 	MisconfOptions
 	ModuleOptions
+	PackageOptions
 	RegistryOptions
 	RegoOptions
 	RemoteOptions
 	RepoOptions
 	ReportOptions
-	SBOMOptions
 	ScanOptions
 	SecretOptions
 	VulnerabilityOptions
@@ -350,19 +388,22 @@ type Options struct {
 	// outputWriter is not initialized via the CLI.
 	// It is mainly used for testing purposes or by tools that use Trivy as a library.
 	outputWriter io.Writer
+
+	// args is the arguments passed to the command.
+	args []string
 }
 
 // Align takes consistency of options
-func (o *Options) Align() error {
-	if o.Format == types.FormatSPDX || o.Format == types.FormatSPDXJSON {
-		log.Info(`"--format spdx" and "--format spdx-json" disable security scanning`)
-		o.Scanners = nil
+func (o *Options) Align(f *Flags) error {
+	if scanFlagGroup, ok := findFlagGroup[*ScanFlagGroup](f); ok && scanFlagGroup.Scanners != nil {
+		o.enableSBOM()
 	}
 
-	// Vulnerability scanning is disabled by default for CycloneDX.
-	if o.Format == types.FormatCycloneDX && !viper.IsSet(ScannersFlag.ConfigName) {
-		log.Info(`"--format cyclonedx" disables security scanning. Specify "--scanners vuln" explicitly if you want to include vulnerabilities in the CycloneDX report.`)
-		o.Scanners = nil
+	if packageFlagGroup, ok := findFlagGroup[*PackageFlagGroup](f); ok &&
+		packageFlagGroup.PkgRelationships != nil &&
+		slices.Compare(o.PkgRelationships, ftypes.Relationships) != 0 &&
+		(o.DependencyTree || slices.Contains(types.SupportedSBOMFormats, o.Format) || len(o.VEXSources) != 0) {
+		return xerrors.Errorf("'--pkg-relationships' cannot be used with '--dependency-tree', '--vex' or SBOM formats")
 	}
 
 	if o.Compliance.Spec.ID != "" {
@@ -382,7 +423,7 @@ func (o *Options) Align() error {
 		o.Scanners = scanners
 		o.ImageConfigScanners = nil
 		// TODO: define image-config-scanners in the spec
-		if o.Compliance.Spec.ID == types.ComplianceDockerCIS {
+		if o.Compliance.Spec.ID == types.ComplianceDockerCIS160 {
 			o.Scanners = types.Scanners{types.VulnerabilityScanner}
 			o.ImageConfigScanners = types.Scanners{
 				types.MisconfigScanner,
@@ -394,27 +435,99 @@ func (o *Options) Align() error {
 	return nil
 }
 
+func (o *Options) enableSBOM() {
+	// Always need packages when the vulnerability scanner is enabled
+	if o.Scanners.Enabled(types.VulnerabilityScanner) {
+		o.Scanners.Enable(types.SBOMScanner)
+	}
+
+	// Enable the SBOM scanner when a list of packages is necessary.
+	if o.ListAllPkgs || slices.Contains(types.SupportedSBOMFormats, o.Format) {
+		o.Scanners.Enable(types.SBOMScanner)
+	}
+
+	if o.Format == types.FormatCycloneDX || o.Format == types.FormatSPDX || o.Format == types.FormatSPDXJSON {
+		// Vulnerability scanning is disabled by default for CycloneDX.
+		if !viper.IsSet(ScannersFlag.ConfigName) {
+			log.Info(fmt.Sprintf(`"--format %[1]s" disables security scanning. Specify "--scanners vuln" explicitly if you want to include vulnerabilities in the "%[1]s" report.`, o.Format))
+			o.Scanners = nil
+		}
+		o.Scanners.Enable(types.SBOMScanner)
+	}
+}
+
+// ScanOpts returns options for scanning
+func (o *Options) ScanOpts() types.ScanOptions {
+	return types.ScanOptions{
+		PkgTypes:            o.PkgTypes,
+		PkgRelationships:    o.PkgRelationships,
+		Scanners:            o.Scanners,
+		ImageConfigScanners: o.ImageConfigScanners, // this is valid only for 'image' subcommand
+		ScanRemovedPackages: o.ScanRemovedPkgs,     // this is valid only for 'image' subcommand
+		LicenseCategories:   o.LicenseCategories,
+		LicenseFull:         o.LicenseFull,
+		FilePatterns:        o.FilePatterns,
+		IncludeDevDeps:      o.IncludeDevDeps,
+		Distro:              o.Distro,
+		VulnSeveritySources: o.VulnSeveritySources,
+	}
+}
+
 // RegistryOpts returns options for OCI registries
 func (o *Options) RegistryOpts() ftypes.RegistryOptions {
 	return ftypes.RegistryOptions{
-		Credentials:   o.Credentials,
-		RegistryToken: o.RegistryToken,
-		Insecure:      o.Insecure,
-		Platform:      o.Platform,
-		AWSRegion:     o.AWSOptions.Region,
+		Credentials:     o.Credentials,
+		RegistryToken:   o.RegistryToken,
+		Insecure:        o.Insecure,
+		Platform:        o.Platform,
+		AWSRegion:       o.AWSOptions.Region,
+		RegistryMirrors: o.RegistryMirrors,
 	}
 }
 
 // FilterOpts returns options for filtering
-func (o *Options) FilterOpts() result.FilterOption {
-	return result.FilterOption{
+func (o *Options) FilterOpts() result.FilterOptions {
+	return result.FilterOptions{
 		Severities:         o.Severities,
 		IgnoreStatuses:     o.IgnoreStatuses,
 		IncludeNonFailures: o.IncludeNonFailures,
 		IgnoreFile:         o.IgnoreFile,
 		PolicyFile:         o.IgnorePolicy,
 		IgnoreLicenses:     o.IgnoredLicenses,
-		VEXPath:            o.VEXPath,
+		CacheDir:           o.CacheDir,
+		VEXSources:         o.VEXSources,
+	}
+}
+
+// CacheOpts returns options for scan cache
+func (o *Options) CacheOpts() cache.Options {
+	return cache.Options{
+		Backend:     o.CacheBackend,
+		CacheDir:    o.CacheDir,
+		RedisCACert: o.RedisCACert,
+		RedisCert:   o.RedisCert,
+		RedisKey:    o.RedisKey,
+		RedisTLS:    o.RedisTLS,
+		TTL:         o.CacheTTL,
+	}
+}
+
+// RemoteCacheOpts returns options for remote scan cache
+func (o *Options) RemoteCacheOpts() cache.RemoteOptions {
+	return cache.RemoteOptions{
+		ServerAddr:    o.ServerAddr,
+		CustomHeaders: o.CustomHeaders,
+		Insecure:      o.Insecure,
+		PathPrefix:    o.PathPrefix,
+	}
+}
+
+func (o *Options) ClientScannerOpts() client.ServiceOption {
+	return client.ServiceOption{
+		RemoteURL:     o.ServerAddr,
+		CustomHeaders: o.CustomHeaders,
+		Insecure:      o.Insecure,
+		PathPrefix:    o.PathPrefix,
 	}
 }
 
@@ -447,7 +560,7 @@ func (o *Options) outputPluginWriter(ctx context.Context) (io.Writer, func() err
 	pluginName := strings.TrimPrefix(o.Output, "plugin=")
 
 	pr, pw := io.Pipe()
-	wait, err := plugin.Start(ctx, pluginName, plugin.RunOptions{
+	wait, err := plugin.Start(ctx, pluginName, plugin.Options{
 		Args:  o.OutputPluginArgs,
 		Stdin: pr,
 	})
@@ -469,63 +582,9 @@ func (o *Options) outputPluginWriter(ctx context.Context) (io.Writer, func() err
 
 // groups returns all the flag groups other than global flags
 func (f *Flags) groups() []FlagGroup {
-	var groups []FlagGroup
-	// This order affects the usage message, so they are sorted by frequency of use.
-	if f.ScanFlagGroup != nil {
-		groups = append(groups, f.ScanFlagGroup)
-	}
-	if f.ReportFlagGroup != nil {
-		groups = append(groups, f.ReportFlagGroup)
-	}
-	if f.CacheFlagGroup != nil {
-		groups = append(groups, f.CacheFlagGroup)
-	}
-	if f.DBFlagGroup != nil {
-		groups = append(groups, f.DBFlagGroup)
-	}
-	if f.RegistryFlagGroup != nil {
-		groups = append(groups, f.RegistryFlagGroup)
-	}
-	if f.ImageFlagGroup != nil {
-		groups = append(groups, f.ImageFlagGroup)
-	}
-	if f.SBOMFlagGroup != nil {
-		groups = append(groups, f.SBOMFlagGroup)
-	}
-	if f.VulnerabilityFlagGroup != nil {
-		groups = append(groups, f.VulnerabilityFlagGroup)
-	}
-	if f.MisconfFlagGroup != nil {
-		groups = append(groups, f.MisconfFlagGroup)
-	}
-	if f.ModuleFlagGroup != nil {
-		groups = append(groups, f.ModuleFlagGroup)
-	}
-	if f.SecretFlagGroup != nil {
-		groups = append(groups, f.SecretFlagGroup)
-	}
-	if f.LicenseFlagGroup != nil {
-		groups = append(groups, f.LicenseFlagGroup)
-	}
-	if f.RegoFlagGroup != nil {
-		groups = append(groups, f.RegoFlagGroup)
-	}
-	if f.CloudFlagGroup != nil {
-		groups = append(groups, f.CloudFlagGroup)
-	}
-	if f.AWSFlagGroup != nil {
-		groups = append(groups, f.AWSFlagGroup)
-	}
-	if f.K8sFlagGroup != nil {
-		groups = append(groups, f.K8sFlagGroup)
-	}
-	if f.RemoteFlagGroup != nil {
-		groups = append(groups, f.RemoteFlagGroup)
-	}
-	if f.RepoFlagGroup != nil {
-		groups = append(groups, f.RepoFlagGroup)
-	}
-	return groups
+	return lo.Filter(*f, func(group FlagGroup, _ int) bool {
+		return group != nil && group.Name() != "Global"
+	})
 }
 
 func (f *Flags) AddFlags(cmd *cobra.Command) {
@@ -583,145 +642,22 @@ func (f *Flags) Bind(cmd *cobra.Command) error {
 
 // nolint: gocyclo
 func (f *Flags) ToOptions(args []string) (Options, error) {
-	var err error
 	opts := Options{
-		AppVersion: version.AppVersion(),
+		AppVersion: app.Version(),
+		args:       args,
 	}
 
-	if f.GlobalFlagGroup != nil {
-		opts.GlobalOptions, err = f.GlobalFlagGroup.ToOptions()
-		if err != nil {
-			return Options{}, xerrors.Errorf("global flag error: %w", err)
+	for _, group := range *f { // Include global flags
+		if err := parseFlags(group); err != nil {
+			return Options{}, xerrors.Errorf("unable to parse flags: %w", err)
+		}
+
+		if err := group.ToOptions(&opts); err != nil {
+			return Options{}, xerrors.Errorf("unable to convert flags to options: %w", err)
 		}
 	}
 
-	if f.AWSFlagGroup != nil {
-		opts.AWSOptions, err = f.AWSFlagGroup.ToOptions()
-		if err != nil {
-			return Options{}, xerrors.Errorf("aws flag error: %w", err)
-		}
-	}
-
-	if f.CloudFlagGroup != nil {
-		opts.CloudOptions, err = f.CloudFlagGroup.ToOptions()
-		if err != nil {
-			return Options{}, xerrors.Errorf("cloud flag error: %w", err)
-		}
-	}
-
-	if f.CacheFlagGroup != nil {
-		opts.CacheOptions, err = f.CacheFlagGroup.ToOptions()
-		if err != nil {
-			return Options{}, xerrors.Errorf("cache flag error: %w", err)
-		}
-	}
-
-	if f.DBFlagGroup != nil {
-		opts.DBOptions, err = f.DBFlagGroup.ToOptions()
-		if err != nil {
-			return Options{}, xerrors.Errorf("db flag error: %w", err)
-		}
-	}
-
-	if f.ImageFlagGroup != nil {
-		opts.ImageOptions, err = f.ImageFlagGroup.ToOptions()
-		if err != nil {
-			return Options{}, xerrors.Errorf("image flag error: %w", err)
-		}
-	}
-
-	if f.K8sFlagGroup != nil {
-		opts.K8sOptions, err = f.K8sFlagGroup.ToOptions()
-		if err != nil {
-			return Options{}, xerrors.Errorf("k8s flag error: %w", err)
-		}
-	}
-
-	if f.LicenseFlagGroup != nil {
-		opts.LicenseOptions, err = f.LicenseFlagGroup.ToOptions()
-		if err != nil {
-			return Options{}, xerrors.Errorf("license flag error: %w", err)
-		}
-	}
-
-	if f.MisconfFlagGroup != nil {
-		opts.MisconfOptions, err = f.MisconfFlagGroup.ToOptions()
-		if err != nil {
-			return Options{}, xerrors.Errorf("misconfiguration flag error: %w", err)
-		}
-	}
-
-	if f.ModuleFlagGroup != nil {
-		opts.ModuleOptions, err = f.ModuleFlagGroup.ToOptions()
-		if err != nil {
-			return Options{}, xerrors.Errorf("module flag error: %w", err)
-		}
-	}
-
-	if f.RegoFlagGroup != nil {
-		opts.RegoOptions, err = f.RegoFlagGroup.ToOptions()
-		if err != nil {
-			return Options{}, xerrors.Errorf("rego flag error: %w", err)
-		}
-	}
-
-	if f.RemoteFlagGroup != nil {
-		opts.RemoteOptions, err = f.RemoteFlagGroup.ToOptions()
-		if err != nil {
-			return Options{}, xerrors.Errorf("remote flag error: %w", err)
-		}
-	}
-
-	if f.RegistryFlagGroup != nil {
-		opts.RegistryOptions, err = f.RegistryFlagGroup.ToOptions()
-		if err != nil {
-			return Options{}, xerrors.Errorf("registry flag error: %w", err)
-		}
-	}
-
-	if f.RepoFlagGroup != nil {
-		opts.RepoOptions, err = f.RepoFlagGroup.ToOptions()
-		if err != nil {
-			return Options{}, xerrors.Errorf("rego flag error: %w", err)
-		}
-	}
-
-	if f.ReportFlagGroup != nil {
-		opts.ReportOptions, err = f.ReportFlagGroup.ToOptions()
-		if err != nil {
-			return Options{}, xerrors.Errorf("report flag error: %w", err)
-		}
-	}
-
-	if f.SBOMFlagGroup != nil {
-		opts.SBOMOptions, err = f.SBOMFlagGroup.ToOptions()
-		if err != nil {
-			return Options{}, xerrors.Errorf("sbom flag error: %w", err)
-		}
-	}
-
-	if f.ScanFlagGroup != nil {
-		opts.ScanOptions, err = f.ScanFlagGroup.ToOptions(args)
-		if err != nil {
-			return Options{}, xerrors.Errorf("scan flag error: %w", err)
-		}
-	}
-
-	if f.SecretFlagGroup != nil {
-		opts.SecretOptions, err = f.SecretFlagGroup.ToOptions()
-		if err != nil {
-			return Options{}, xerrors.Errorf("secret flag error: %w", err)
-		}
-	}
-
-	if f.VulnerabilityFlagGroup != nil {
-		opts.VulnerabilityOptions, err = f.VulnerabilityFlagGroup.ToOptions()
-		if err != nil {
-			return Options{}, xerrors.Errorf("vulnerability flag error: %w", err)
-		}
-	}
-
-	if err := opts.Align(); err != nil {
+	if err := opts.Align(f); err != nil {
 		return Options{}, xerrors.Errorf("align options error: %w", err)
 	}
 
@@ -768,4 +704,51 @@ func (a flagAliases) NormalizeFunc() func(*pflag.FlagSet, string) pflag.Normaliz
 		}
 		return pflag.NormalizedName(name)
 	}
+}
+
+func HiddenFlags() []string {
+	var allFlagGroups = []FlagGroup{
+		NewGlobalFlagGroup(),
+		NewCacheFlagGroup(),
+		NewCleanFlagGroup(),
+		NewClientFlags(),
+		NewDBFlagGroup(),
+		NewImageFlagGroup(),
+		NewK8sFlagGroup(),
+		NewLicenseFlagGroup(),
+		NewMisconfFlagGroup(),
+		NewModuleFlagGroup(),
+		NewPackageFlagGroup(),
+		NewRegistryFlagGroup(),
+		NewRegoFlagGroup(),
+		NewReportFlagGroup(),
+		NewRepoFlagGroup(),
+		NewScanFlagGroup(),
+		NewSecretFlagGroup(),
+		NewServerFlags(),
+		NewVulnerabilityFlagGroup(),
+	}
+
+	var hiddenFlags []string
+	for _, flagGroup := range allFlagGroups {
+		for _, flag := range flagGroup.Flags() {
+			if !reflect.ValueOf(flag).IsNil() && flag.Hidden() {
+				hiddenFlags = append(hiddenFlags, flag.GetConfigName())
+			}
+		}
+	}
+	return hiddenFlags
+}
+
+// findFlagGroup finds a flag group by type T
+// Note that Go generics doesn't support methods today.
+// cf. https://github.com/golang/go/issues/49085
+func findFlagGroup[T FlagGroup](f *Flags) (T, bool) {
+	for _, group := range *f {
+		if g, ok := group.(T); ok {
+			return g, true
+		}
+	}
+	var zero T
+	return zero, false
 }

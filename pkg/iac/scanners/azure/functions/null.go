@@ -1,5 +1,5 @@
 package functions
 
-func Null(args ...interface{}) interface{} {
+func Null(_ ...any) any {
 	return nil
 }

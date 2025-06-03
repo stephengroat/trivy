@@ -1,33 +1,60 @@
 package parser
 
 import (
-	"bytes"
-	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
+	"maps"
 	"strconv"
 	"strings"
 
-	"github.com/liamg/jfather"
+	"github.com/go-json-experiment/json"
+	"github.com/go-json-experiment/json/jsontext"
 	"gopkg.in/yaml.v3"
 
 	"github.com/aquasecurity/trivy/pkg/iac/scanners/cloudformation/cftypes"
 )
 
 type Parameter struct {
+	// TODO: remove inner
 	inner parameterInner
 }
 
 type parameterInner struct {
-	Type    string      `yaml:"Type"`
-	Default interface{} `yaml:"Default"`
+	Type    string `yaml:"Type"`
+	Default any    `yaml:"Default"`
 }
 
 func (p *Parameter) UnmarshalYAML(node *yaml.Node) error {
 	return node.Decode(&p.inner)
 }
 
-func (p *Parameter) UnmarshalJSONWithMetadata(node jfather.Node) error {
-	return node.Decode(&p.inner)
+func (p *Parameter) UnmarshalJSONFrom(dec *jsontext.Decoder) error {
+
+	var inner parameterInner
+
+	if err := json.UnmarshalDecode(dec, &inner,
+		json.WithUnmarshalers(json.UnmarshalFromFunc(unmarshalIntFirst)),
+	); err != nil {
+		return err
+	}
+
+	p.inner = inner
+	return nil
+}
+
+func unmarshalIntFirst(dec *jsontext.Decoder, v *any) error {
+	if dec.PeekKind() == '0' {
+		if jval, err := dec.ReadValue(); err != nil {
+			return err
+		} else if v1, err := strconv.ParseInt(string(jval), 10, 64); err == nil {
+			*v = int(v1)
+		} else if v1, err := strconv.ParseFloat(string(jval), 64); err == nil {
+			*v = v1
+		}
+		return nil
+	}
+	return json.SkipFunc
 }
 
 func (p *Parameter) Type() cftypes.CfType {
@@ -43,11 +70,11 @@ func (p *Parameter) Type() cftypes.CfType {
 	}
 }
 
-func (p *Parameter) Default() interface{} {
+func (p *Parameter) Default() any {
 	return p.inner.Default
 }
 
-func (p *Parameter) UpdateDefault(inVal interface{}) {
+func (p *Parameter) UpdateDefault(inVal any) {
 	passedVal := inVal.(string)
 
 	switch p.inner.Type {
@@ -65,35 +92,34 @@ func (p *Parameter) UpdateDefault(inVal interface{}) {
 type Parameters map[string]any
 
 func (p *Parameters) Merge(other Parameters) {
-	for k, v := range other {
-		(*p)[k] = v
-	}
+	maps.Copy((*p), other)
 }
 
-func (p *Parameters) UnmarshalJSON(data []byte) error {
+func (p *Parameters) UnmarshalJSONFrom(d *jsontext.Decoder) error {
 	(*p) = make(Parameters)
 
-	if len(data) == 0 {
-		return nil
-	}
-
-	switch {
-	case data[0] == '{' && data[len(data)-1] == '}': // object
+	switch d.PeekKind() {
+	case '{':
 		// CodePipeline like format
 		var params struct {
 			Params map[string]any `json:"Parameters"`
 		}
 
-		if err := json.Unmarshal(data, &params); err != nil {
+		if err := json.UnmarshalDecode(d, &params); err != nil {
 			return err
 		}
 
 		(*p) = params.Params
-	case data[0] == '[' && data[len(data)-1] == ']': // array
+	case '[':
 		// Original format
 		var params []string
 
-		if err := json.Unmarshal(data, &params); err == nil {
+		jval, err := d.ReadValue()
+		if err != nil {
+			return err
+		}
+
+		if err := json.Unmarshal(jval, &params); err == nil {
 			for _, param := range params {
 				parts := strings.Split(param, "=")
 				if len(parts) != 2 {
@@ -110,9 +136,7 @@ func (p *Parameters) UnmarshalJSON(data []byte) error {
 			ParameterValue string `json:"ParameterValue"`
 		}
 
-		d := json.NewDecoder(bytes.NewReader(data))
-		d.DisallowUnknownFields()
-		if err := d.Decode(&cfparams); err != nil {
+		if err := json.Unmarshal(jval, &cfparams, json.RejectUnknownMembers(true)); err != nil {
 			return err
 		}
 
@@ -120,8 +144,16 @@ func (p *Parameters) UnmarshalJSON(data []byte) error {
 			(*p)[param.ParameterKey] = param.ParameterValue
 		}
 	default:
-		return fmt.Errorf("unsupported parameters format")
+		return errors.New("unsupported parameters format")
 	}
 
 	return nil
+}
+
+func ParseParameters(r io.Reader) (Parameters, error) {
+	var parameters Parameters
+	if err := json.UnmarshalRead(r, &parameters); err != nil {
+		return nil, err
+	}
+	return parameters, nil
 }

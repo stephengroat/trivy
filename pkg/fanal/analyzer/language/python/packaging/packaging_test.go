@@ -1,7 +1,6 @@
 package packaging
 
 import (
-	"context"
 	"os"
 	"testing"
 
@@ -21,28 +20,6 @@ func Test_packagingAnalyzer_Analyze(t *testing.T) {
 		wantErr         string
 	}{
 		{
-			name: "egg zip",
-			dir:  "testdata/egg-zip",
-			want: &analyzer.AnalysisResult{
-				Applications: []types.Application{
-					{
-						Type:     types.PythonPkg,
-						FilePath: "kitchen-1.2.6-py2.7.egg",
-						Libraries: types.Packages{
-							{
-								Name:    "kitchen",
-								Version: "1.2.6",
-								Licenses: []string{
-									"GNU Library or Lesser General Public License (LGPL)",
-								},
-								FilePath: "kitchen-1.2.6-py2.7.egg",
-							},
-						},
-					},
-				},
-			},
-		},
-		{
 			name:            "egg-info",
 			dir:             "testdata/happy-egg",
 			includeChecksum: true,
@@ -51,11 +28,11 @@ func Test_packagingAnalyzer_Analyze(t *testing.T) {
 					{
 						Type:     types.PythonPkg,
 						FilePath: "distlib-0.3.1.egg-info/PKG-INFO",
-						Libraries: types.Packages{
+						Packages: types.Packages{
 							{
 								Name:     "distlib",
 								Version:  "0.3.1",
-								Licenses: []string{"Python license"},
+								Licenses: []string{"Python-2.0"},
 								FilePath: "distlib-0.3.1.egg-info/PKG-INFO",
 								Digest:   "sha1:d9d89d8ed3b2b683767c96814c9c5d3e57ef2e1b",
 							},
@@ -72,11 +49,11 @@ func Test_packagingAnalyzer_Analyze(t *testing.T) {
 					{
 						Type:     types.PythonPkg,
 						FilePath: "setuptools-51.3.3.egg-info/PKG-INFO",
-						Libraries: types.Packages{
+						Packages: types.Packages{
 							{
 								Name:     "setuptools",
 								Version:  "51.3.3",
-								Licenses: []string{"MIT License"},
+								Licenses: []string{"MIT"},
 								FilePath: "setuptools-51.3.3.egg-info/PKG-INFO",
 							},
 						},
@@ -92,11 +69,11 @@ func Test_packagingAnalyzer_Analyze(t *testing.T) {
 					{
 						Type:     types.PythonPkg,
 						FilePath: "setuptools-51.3.3.dist-info/METADATA",
-						Libraries: types.Packages{
+						Packages: types.Packages{
 							{
 								Name:     "setuptools",
 								Version:  "51.3.3",
-								Licenses: []string{"MIT License"},
+								Licenses: []string{"MIT"},
 								FilePath: "setuptools-51.3.3.dist-info/METADATA",
 							},
 						},
@@ -112,22 +89,17 @@ func Test_packagingAnalyzer_Analyze(t *testing.T) {
 					{
 						Type:     types.PythonPkg,
 						FilePath: "distlib-0.3.1.dist-info/METADATA",
-						Libraries: types.Packages{
+						Packages: types.Packages{
 							{
 								Name:     "distlib",
 								Version:  "0.3.1",
-								Licenses: []string{"Python license"},
+								Licenses: []string{"Python-2.0"},
 								FilePath: "distlib-0.3.1.dist-info/METADATA",
 							},
 						},
 					},
 				},
 			},
-		},
-		{
-			name: "egg zip doesn't contain required files",
-			dir:  "testdata/no-req-files",
-			want: &analyzer.AnalysisResult{},
 		},
 		{
 			name: "license file in dist.info",
@@ -137,11 +109,16 @@ func Test_packagingAnalyzer_Analyze(t *testing.T) {
 					{
 						Type:     types.PythonPkg,
 						FilePath: "typing_extensions-4.4.0.dist-info/METADATA",
-						Libraries: []types.Package{
+						Packages: []types.Package{
 							{
-								Name:     "typing_extensions",
-								Version:  "4.4.0",
-								Licenses: []string{"BeOpen", "CNRI-Python-GPL-Compatible", "LicenseRef-MIT-Lucent", "Python-2.0"},
+								Name:    "typing_extensions",
+								Version: "4.4.0",
+								Licenses: []string{
+									"BeOpen",
+									"CNRI-Python-GPL-Compatible",
+									"LicenseRef-MIT-Lucent",
+									"Python-2.0",
+								},
 								FilePath: "typing_extensions-4.4.0.dist-info/METADATA",
 							},
 						},
@@ -155,7 +132,7 @@ func Test_packagingAnalyzer_Analyze(t *testing.T) {
 
 			a, err := newPackagingAnalyzer(analyzer.AnalyzerOptions{})
 			require.NoError(t, err)
-			got, err := a.PostAnalyze(context.Background(), analyzer.PostAnalysisInput{
+			got, err := a.PostAnalyze(t.Context(), analyzer.PostAnalysisInput{
 				FS: os.DirFS(tt.dir),
 				Options: analyzer.AnalysisOptions{
 					FileChecksum: tt.includeChecksum,
@@ -163,11 +140,10 @@ func Test_packagingAnalyzer_Analyze(t *testing.T) {
 			})
 
 			if tt.wantErr != "" {
-				require.NotNil(t, err)
-				assert.Contains(t, err.Error(), tt.wantErr)
+				require.ErrorContains(t, err, tt.wantErr)
 				return
 			}
-			assert.NoError(t, err)
+			require.NoError(t, err)
 			assert.Equal(t, tt.want, got)
 		})
 	}

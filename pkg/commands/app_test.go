@@ -197,6 +197,7 @@ func TestFlags(t *testing.T) {
 				scanners: types.Scanners{
 					types.VulnerabilityScanner,
 					types.SecretScanner,
+					types.SBOMScanner,
 				},
 			},
 		},
@@ -216,6 +217,7 @@ func TestFlags(t *testing.T) {
 				scanners: types.Scanners{
 					types.VulnerabilityScanner,
 					types.SecretScanner,
+					types.SBOMScanner,
 				},
 			},
 		},
@@ -237,6 +239,7 @@ func TestFlags(t *testing.T) {
 				scanners: types.Scanners{
 					types.VulnerabilityScanner,
 					types.SecretScanner,
+					types.SBOMScanner,
 				},
 			},
 		},
@@ -257,6 +260,7 @@ func TestFlags(t *testing.T) {
 				scanners: types.Scanners{
 					types.VulnerabilityScanner,
 					types.SecretScanner,
+					types.SBOMScanner,
 				},
 			},
 		},
@@ -267,7 +271,7 @@ func TestFlags(t *testing.T) {
 				"--scanners",
 				"license",
 				"--compliance",
-				"docker-cis",
+				"docker-cis-1.6.0",
 			},
 			want: want{
 				format: types.FormatTable,
@@ -292,6 +296,15 @@ func TestFlags(t *testing.T) {
 			},
 			wantErr: `invalid argument "foo" for "--format" flag`,
 		},
+		{
+			name: "missing config file",
+			arguments: []string{
+				"test",
+				"--config",
+				"none",
+			},
+			wantErr: `config file "none" loading error: open none:`,
+		},
 	}
 
 	for _, tt := range tests {
@@ -302,9 +315,9 @@ func TestFlags(t *testing.T) {
 			rootCmd.SetOut(io.Discard)
 
 			flags := &flag.Flags{
-				GlobalFlagGroup: globalFlags,
-				ReportFlagGroup: flag.NewReportFlagGroup(),
-				ScanFlagGroup:   flag.NewScanFlagGroup(),
+				globalFlags,
+				flag.NewReportFlagGroup(),
+				flag.NewScanFlagGroup(),
 			}
 			cmd := &cobra.Command{
 				Use: "test",

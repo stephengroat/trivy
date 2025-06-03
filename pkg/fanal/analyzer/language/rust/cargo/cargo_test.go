@@ -1,7 +1,6 @@
 package cargo
 
 import (
-	"context"
 	"os"
 	"testing"
 
@@ -27,32 +26,22 @@ func Test_cargoAnalyzer_Analyze(t *testing.T) {
 					{
 						Type:     types.Cargo,
 						FilePath: "Cargo.lock",
-						Libraries: types.Packages{
+						Packages: types.Packages{
 							{
-								ID:           "aho-corasick@0.7.20",
-								Name:         "aho-corasick",
-								Version:      "0.7.20",
-								Indirect:     true,
-								Relationship: types.RelationshipIndirect,
+								ID:           "app@0.1.0",
+								Name:         "app",
+								Version:      "0.1.0",
+								Relationship: types.RelationshipRoot,
 								Locations: []types.Location{
 									{
-										StartLine: 4,
-										EndLine:   11,
+										StartLine: 13,
+										EndLine:   20,
 									},
 								},
-								DependsOn: []string{"memchr@2.5.0"},
-							},
-							{
-								ID:           "libc@0.2.140",
-								Name:         "libc",
-								Version:      "0.2.140",
-								Indirect:     true,
-								Relationship: types.RelationshipIndirect,
-								Locations: []types.Location{
-									{
-										StartLine: 22,
-										EndLine:   26,
-									},
+								DependsOn: []string{
+									"memchr@1.0.2",
+									"regex-syntax@0.5.6",
+									"regex@1.7.3",
 								},
 							},
 							{
@@ -68,19 +57,6 @@ func Test_cargoAnalyzer_Analyze(t *testing.T) {
 									},
 								},
 								DependsOn: []string{"libc@0.2.140"},
-							},
-							{
-								ID:           "memchr@2.5.0",
-								Name:         "memchr",
-								Version:      "2.5.0",
-								Indirect:     true,
-								Relationship: types.RelationshipIndirect,
-								Locations: []types.Location{
-									{
-										StartLine: 37,
-										EndLine:   41,
-									},
-								},
 							},
 							{
 								ID:           "regex@1.7.3",
@@ -113,6 +89,46 @@ func Test_cargoAnalyzer_Analyze(t *testing.T) {
 									},
 								},
 								DependsOn: []string{"ucd-util@0.1.10"},
+							},
+							{
+								ID:           "aho-corasick@0.7.20",
+								Name:         "aho-corasick",
+								Version:      "0.7.20",
+								Indirect:     true,
+								Relationship: types.RelationshipIndirect,
+								Locations: []types.Location{
+									{
+										StartLine: 4,
+										EndLine:   11,
+									},
+								},
+								DependsOn: []string{"memchr@2.5.0"},
+							},
+							{
+								ID:           "libc@0.2.140",
+								Name:         "libc",
+								Version:      "0.2.140",
+								Indirect:     true,
+								Relationship: types.RelationshipIndirect,
+								Locations: []types.Location{
+									{
+										StartLine: 22,
+										EndLine:   26,
+									},
+								},
+							},
+							{
+								ID:           "memchr@2.5.0",
+								Name:         "memchr",
+								Version:      "2.5.0",
+								Indirect:     true,
+								Relationship: types.RelationshipIndirect,
+								Locations: []types.Location{
+									{
+										StartLine: 37,
+										EndLine:   41,
+									},
+								},
 							},
 							{
 								ID:           "regex-syntax@0.6.29",
@@ -153,7 +169,22 @@ func Test_cargoAnalyzer_Analyze(t *testing.T) {
 					{
 						Type:     types.Cargo,
 						FilePath: "Cargo.lock",
-						Libraries: types.Packages{
+						Packages: types.Packages{
+							{
+								ID:           "app@0.1.0",
+								Name:         "app",
+								Version:      "0.1.0",
+								Relationship: types.RelationshipRoot,
+								Locations: []types.Location{
+									{
+										StartLine: 4,
+										EndLine:   9,
+									},
+								},
+								DependsOn: []string{
+									"memchr@2.5.0",
+								},
+							},
 							{
 								ID:           "memchr@2.5.0",
 								Name:         "memchr",
@@ -180,7 +211,7 @@ func Test_cargoAnalyzer_Analyze(t *testing.T) {
 					{
 						Type:     types.Cargo,
 						FilePath: "Cargo.lock",
-						Libraries: types.Packages{
+						Packages: types.Packages{
 							{
 								ID:           "aho-corasick@0.7.20",
 								Name:         "aho-corasick",
@@ -367,7 +398,7 @@ func Test_cargoAnalyzer_Analyze(t *testing.T) {
 					{
 						Type:     types.Cargo,
 						FilePath: "Cargo.lock",
-						Libraries: types.Packages{
+						Packages: types.Packages{
 							{
 								ID:           "app@0.1.0",
 								Name:         "app",
@@ -413,20 +444,44 @@ func Test_cargoAnalyzer_Analyze(t *testing.T) {
 					{
 						Type:     types.Cargo,
 						FilePath: "Cargo.lock",
-						Libraries: types.Packages{
+						Packages: types.Packages{
 							{
-								ID:           "aho-corasick@1.1.2",
-								Name:         "aho-corasick",
-								Version:      "1.1.2",
-								Indirect:     true,
-								Relationship: types.RelationshipIndirect,
+								ID:           "d0e1231acd612a0f",
+								Relationship: types.RelationshipRoot,
+								DependsOn: []string{
+									"member@0.1.0",
+									"member2@0.1.0",
+								},
+							},
+							{
+								ID:           "member@0.1.0",
+								Name:         "member",
+								Version:      "0.1.0",
+								Relationship: types.RelationshipWorkspace,
 								Locations: []types.Location{
 									{
-										StartLine: 5,
-										EndLine:   12,
+										StartLine: 30,
+										EndLine:   35,
 									},
 								},
-								DependsOn: []string{"memchr@2.6.4"},
+								DependsOn: []string{
+									"gdb-command@0.7.6",
+								},
+							},
+							{
+								ID:           "member2@0.1.0",
+								Name:         "member2",
+								Version:      "0.1.0",
+								Relationship: types.RelationshipWorkspace,
+								Locations: []types.Location{
+									{
+										StartLine: 37,
+										EndLine:   42,
+									},
+								},
+								DependsOn: []string{
+									"regex@1.10.2",
+								},
 							},
 							{
 								ID:           "gdb-command@0.7.6",
@@ -444,6 +499,38 @@ func Test_cargoAnalyzer_Analyze(t *testing.T) {
 									"regex@1.10.2",
 									"wait-timeout@0.2.0",
 								},
+							},
+							{
+								ID:           "regex@1.10.2",
+								Name:         "regex",
+								Version:      "1.10.2",
+								Relationship: types.RelationshipDirect,
+								Locations: []types.Location{
+									{
+										StartLine: 50,
+										EndLine:   60,
+									},
+								},
+								DependsOn: []string{
+									"aho-corasick@1.1.2",
+									"memchr@2.6.4",
+									"regex-automata@0.4.3",
+									"regex-syntax@0.8.2",
+								},
+							},
+							{
+								ID:           "aho-corasick@1.1.2",
+								Name:         "aho-corasick",
+								Version:      "1.1.2",
+								Indirect:     true,
+								Relationship: types.RelationshipIndirect,
+								Locations: []types.Location{
+									{
+										StartLine: 5,
+										EndLine:   12,
+									},
+								},
+								DependsOn: []string{"memchr@2.6.4"},
 							},
 							{
 								ID:           "libc@0.2.150",
@@ -469,24 +556,6 @@ func Test_cargoAnalyzer_Analyze(t *testing.T) {
 										StartLine: 44,
 										EndLine:   48,
 									},
-								},
-							},
-							{
-								ID:           "regex@1.10.2",
-								Name:         "regex",
-								Version:      "1.10.2",
-								Relationship: types.RelationshipDirect,
-								Locations: []types.Location{
-									{
-										StartLine: 50,
-										EndLine:   60,
-									},
-								},
-								DependsOn: []string{
-									"aho-corasick@1.1.2",
-									"memchr@2.6.4",
-									"regex-automata@0.4.3",
-									"regex-syntax@0.8.2",
 								},
 							},
 							{
@@ -546,11 +615,11 @@ func Test_cargoAnalyzer_Analyze(t *testing.T) {
 			a, err := newCargoAnalyzer(analyzer.AnalyzerOptions{})
 			require.NoError(t, err)
 
-			got, err := a.PostAnalyze(context.Background(), analyzer.PostAnalysisInput{
+			got, err := a.PostAnalyze(t.Context(), analyzer.PostAnalysisInput{
 				FS: os.DirFS(tt.dir),
 			})
 
-			assert.NoError(t, err)
+			require.NoError(t, err)
 			assert.Equal(t, tt.want, got)
 		})
 	}

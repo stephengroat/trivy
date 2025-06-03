@@ -1,13 +1,14 @@
 package armjson
 
 import (
+	"errors"
 	"fmt"
 	"reflect"
 
 	"github.com/aquasecurity/trivy/pkg/iac/types"
 )
 
-func (n *node) Decode(target interface{}) error {
+func (n *node) Decode(target any) error {
 	v := reflect.ValueOf(target)
 	return n.decodeToValue(v)
 }
@@ -40,7 +41,7 @@ func (n *node) decodeToValue(v reflect.Value) error {
 	}
 
 	if !v.CanSet() {
-		return fmt.Errorf("target is not settable")
+		return errors.New("target is not settable")
 	}
 
 	switch n.kind {
@@ -59,7 +60,7 @@ func (n *node) decodeToValue(v reflect.Value) error {
 	case KindComment:
 		return n.decodeString(v)
 	case KindUnknown:
-		return fmt.Errorf("cannot decode unknown kind")
+		return errors.New("cannot decode unknown kind")
 	default:
 		return fmt.Errorf("decoding of kind 0x%x is not supported", n.kind)
 	}

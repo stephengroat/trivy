@@ -1,8 +1,7 @@
 package iam
 
 import (
-	"github.com/liamg/iamgo"
-
+	"github.com/aquasecurity/iamgo"
 	iacTypes "github.com/aquasecurity/trivy/pkg/iac/types"
 )
 
@@ -34,10 +33,10 @@ type Document struct {
 	HasRefs  bool
 }
 
-func (d Document) ToRego() interface{} {
+func (d Document) ToRego() any {
 	m := d.Metadata
 	doc, _ := d.Parsed.MarshalJSON()
-	input := map[string]interface{}{
+	input := map[string]any{
 		"filepath":     m.Range().GetFilename(),
 		"startline":    m.Range().GetStartLine(),
 		"endline":      m.Range().GetEndLine(),
@@ -59,22 +58,16 @@ func (d Document) ToRego() interface{} {
 type Group struct {
 	Metadata iacTypes.Metadata
 	Name     iacTypes.StringValue
-	Users    []User
 	Policies []Policy
 }
 
 type User struct {
 	Metadata   iacTypes.Metadata
 	Name       iacTypes.StringValue
-	Groups     []Group
 	Policies   []Policy
 	AccessKeys []AccessKey
 	MFADevices []MFADevice
 	LastAccess iacTypes.TimeValue
-}
-
-func (u *User) HasLoggedIn() bool {
-	return u.LastAccess.GetMetadata().IsResolvable() && !u.LastAccess.IsNever()
 }
 
 type MFADevice struct {

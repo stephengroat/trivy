@@ -27,7 +27,7 @@ message PackageInfo {
 message Application {
   string           type      = 1;
   string           file_path = 2;
-  repeated Package libraries = 3;
+  repeated Package packages  = 3;
 }
 
 message Package {
@@ -42,18 +42,20 @@ message Package {
   string        arch       = 5;
   // src package containing some binary packages
   // e.g. bind
-  string            src_name    = 6;
-  string            src_version = 7;
-  string            src_release = 8;
-  int32             src_epoch   = 9;
-  repeated string   licenses    = 15;
-  repeated Location locations   = 20;
-  Layer             layer       = 11;
-  string            file_path   = 12;
-  repeated string   depends_on  = 14;
-  string            digest      = 16;
-  bool              dev         = 17;
-  bool              indirect    = 18;
+  string            src_name     = 6;
+  string            src_version  = 7;
+  string            src_release  = 8;
+  int32             src_epoch    = 9;
+  repeated string   licenses     = 15;
+  repeated Location locations    = 20;
+  Layer             layer        = 11;
+  string            file_path    = 12;
+  repeated string   depends_on   = 14;
+  string            digest       = 16;
+  bool              dev          = 17;
+  bool              indirect     = 18;
+  string            maintainer   = 21;
+  int32             relationship = 22;
 }
 
 message PkgIdentifier {
@@ -68,12 +70,13 @@ message Location {
 }
 
 message Misconfiguration {
-  string                 file_type  = 1;
-  string                 file_path  = 2;
-  repeated MisconfResult successes  = 3;
-  repeated MisconfResult warnings   = 4;
-  repeated MisconfResult failures   = 5;
-  repeated MisconfResult exceptions = 6;
+  string                 file_type = 1;
+  string                 file_path = 2;
+  repeated MisconfResult successes = 3;
+  repeated MisconfResult warnings  = 4;
+  repeated MisconfResult failures  = 5;
+
+  reserved 6;  // deprecated 'exceptions'
 }
 
 message MisconfResult {
@@ -131,8 +134,8 @@ message Vulnerability {
   string                    primary_url          = 14;
   google.protobuf.Timestamp published_date       = 15;
   google.protobuf.Timestamp last_modified_date   = 16;
-  google.protobuf.Value     custom_advisory_data = 17;
-  google.protobuf.Value     custom_vuln_data     = 18;
+  bytes                     custom_advisory_data = 17;
+  bytes                     custom_vuln_data     = 18;
   repeated string           vendor_ids           = 19;
   DataSource                data_source          = 20;
   map<string, Severity>     vendor_severity      = 21;
@@ -151,15 +154,17 @@ message Layer {
   string digest     = 1;
   string diff_id    = 2;
   string created_by = 3;
+  int64  size       = 4;
 }
 
 message CauseMetadata {
-  string resource   = 1;
-  string provider   = 2;
-  string service    = 3;
-  int32  start_line = 4;
-  int32  end_line   = 5;
-  Code   code       = 6;
+  string        resource       = 1;
+  string        provider       = 2;
+  string        service        = 3;
+  int32         start_line     = 4;
+  int32         end_line       = 5;
+  Code          code           = 6;
+  RenderedCause rendered_cause = 7;
 }
 
 enum Severity {
@@ -171,10 +176,12 @@ enum Severity {
 }
 
 message CVSS {
-  string v2_vector = 1;
-  string v3_vector = 2;
-  double v2_score  = 3;
-  double v3_score  = 4;
+  string v2_vector  = 1;
+  string v3_vector  = 2;
+  double v2_score   = 3;
+  double v3_score   = 4;
+  string v40_vector = 5;
+  double v40_score  = 6;
 }
 
 message CustomResource {
@@ -197,6 +204,11 @@ message Line {
 
 message Code {
   repeated Line lines = 1;
+}
+
+message RenderedCause {
+  string raw         = 1;
+  string highlighted = 2;
 }
 
 message SecretFinding {
@@ -226,6 +238,7 @@ message DetectedLicense {
   string               name       = 5;
   float                confidence = 6;
   string               link       = 7;
+  string               text       = 8;
 }
 
 message LicenseFile {

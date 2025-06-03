@@ -8,18 +8,18 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/aquasecurity/trivy/pkg/dependency/types"
+	ftypes "github.com/aquasecurity/trivy/pkg/fanal/types"
 )
 
 func TestParseWordPress(t *testing.T) {
 	tests := []struct {
 		file    string // Test input file
-		want    types.Library
+		want    ftypes.Package
 		wantErr string
 	}{
 		{
 			file: "testdata/version.php",
-			want: types.Library{
+			want: ftypes.Package{
 				Name:    "wordpress",
 				Version: "4.9.4-alpha",
 			},
@@ -37,8 +37,7 @@ func TestParseWordPress(t *testing.T) {
 
 			got, err := Parse(f)
 			if tt.wantErr != "" {
-				require.Error(t, err)
-				assert.Contains(t, err.Error(), tt.wantErr)
+				require.ErrorContains(t, err, tt.wantErr)
 				return
 			}
 

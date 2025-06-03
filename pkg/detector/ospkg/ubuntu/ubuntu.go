@@ -9,10 +9,11 @@ import (
 	"golang.org/x/xerrors"
 
 	"github.com/aquasecurity/trivy-db/pkg/vulnsrc/ubuntu"
+	"github.com/aquasecurity/trivy/pkg/clock"
 	osver "github.com/aquasecurity/trivy/pkg/detector/ospkg/version"
 	ftypes "github.com/aquasecurity/trivy/pkg/fanal/types"
 	"github.com/aquasecurity/trivy/pkg/log"
-	"github.com/aquasecurity/trivy/pkg/scanner/utils"
+	"github.com/aquasecurity/trivy/pkg/scan/utils"
 	"github.com/aquasecurity/trivy/pkg/types"
 )
 
@@ -62,6 +63,7 @@ var (
 		"23.04":     time.Date(2024, 1, 20, 23, 59, 59, 0, time.UTC),
 		"23.10":     time.Date(2024, 6, 30, 23, 59, 59, 0, time.UTC),
 		"24.04":     time.Date(2034, 3, 31, 23, 59, 59, 0, time.UTC),
+		"24.10":     time.Date(2025, 7, 9, 23, 59, 59, 0, time.UTC),
 	}
 )
 
@@ -84,7 +86,7 @@ func (s *Scanner) Detect(ctx context.Context, osVer string, _ *ftypes.Repository
 
 	var vulns []types.DetectedVulnerability
 	for _, pkg := range pkgs {
-		osVer = s.versionFromEolDates(osVer)
+		osVer = s.versionFromEolDates(ctx, osVer)
 		advisories, err := s.vs.Get(osVer, pkg.SrcName)
 		if err != nil {
 			return nil, xerrors.Errorf("failed to get Ubuntu advisories: %w", err)
@@ -135,7 +137,7 @@ func (s *Scanner) IsSupportedVersion(ctx context.Context, osFamily ftypes.OSType
 }
 
 // versionFromEolDates checks if actual (not ESM) version is not outdated
-func (s *Scanner) versionFromEolDates(osVer string) string {
+func (s *Scanner) versionFromEolDates(ctx context.Context, osVer string) string {
 	if _, ok := eolDates[osVer]; ok {
 		return osVer
 	}
@@ -146,7 +148,7 @@ func (s *Scanner) versionFromEolDates(osVer string) string {
 	// then we need to get vulnerabilities for `18.04`
 	// if `18.04` is outdated - we need to use `18.04-ESM` (we will return error until we add `18.04-ESM` to eolDates)
 	ver := strings.TrimRight(osVer, "-ESM")
-	if eol, ok := eolDates[ver]; ok && time.Now().Before(eol) { // TODO: time.Now() should be replaced with clock.Now()
+	if eol, ok := eolDates[ver]; ok && clock.Now(ctx).Before(eol) {
 		return ver
 	}
 	return osVer

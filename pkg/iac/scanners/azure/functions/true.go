@@ -1,5 +1,5 @@
 package functions
 
-func True(args ...interface{}) interface{} {
+func True(_ ...any) any {
 	return true
 }

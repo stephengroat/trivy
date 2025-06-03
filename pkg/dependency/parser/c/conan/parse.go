@@ -1,19 +1,19 @@
 package conan
 
 import (
-	"io"
+	"slices"
 	"strings"
 
-	"github.com/liamg/jfather"
+	"github.com/go-json-experiment/json"
+	"github.com/go-json-experiment/json/jsontext"
 	"github.com/samber/lo"
-	"golang.org/x/exp/slices"
 	"golang.org/x/xerrors"
 
 	"github.com/aquasecurity/trivy/pkg/dependency"
-	"github.com/aquasecurity/trivy/pkg/dependency/types"
 	ftypes "github.com/aquasecurity/trivy/pkg/fanal/types"
 	"github.com/aquasecurity/trivy/pkg/log"
 	xio "github.com/aquasecurity/trivy/pkg/x/io"
+	xjson "github.com/aquasecurity/trivy/pkg/x/json"
 )
 
 type LockFile struct {
@@ -26,45 +26,46 @@ type GraphLock struct {
 }
 
 type Node struct {
-	Ref       string   `json:"ref"`
-	Requires  []string `json:"requires"`
-	StartLine int
-	EndLine   int
+	Ref      string   `json:"ref"`
+	Requires []string `json:"requires"`
+	xjson.Location
 }
+type Requires []Require
 
 type Require struct {
 	Dependency string
-	StartLine  int
-	EndLine    int
+	xjson.Location
 }
 
-type Requires []Require
+func (r *Require) UnmarshalJSONFrom(dec *jsontext.Decoder) error {
+	return json.UnmarshalDecode(dec, &r.Dependency)
+}
 
 type Parser struct {
 	logger *log.Logger
 }
 
-func NewParser() types.Parser {
+func NewParser() *Parser {
 	return &Parser{
 		logger: log.WithPrefix("conan"),
 	}
 }
 
-func (p *Parser) parseV1(lock LockFile) ([]types.Library, []types.Dependency, error) {
-	var libs []types.Library
-	var deps []types.Dependency
+func (p *Parser) parseV1(lock LockFile) ([]ftypes.Package, []ftypes.Dependency, error) {
+	var pkgs []ftypes.Package
+	var deps []ftypes.Dependency
 	var directDeps []string
 	if root, ok := lock.GraphLock.Nodes["0"]; ok {
 		directDeps = root.Requires
 	}
 
 	// Parse packages
-	parsed := make(map[string]types.Library)
+	parsed := make(map[string]ftypes.Package)
 	for i, node := range lock.GraphLock.Nodes {
 		if node.Ref == "" {
 			continue
 		}
-		lib, err := toLibrary(node.Ref, node.StartLine, node.EndLine)
+		pkg, err := toPackage(node.Ref, node.Location)
 		if err != nil {
 			p.logger.Debug("Parse ref error", log.Err(err))
 			continue
@@ -72,14 +73,14 @@ func (p *Parser) parseV1(lock LockFile) ([]types.Library, []types.Dependency, er
 
 		// Determine if the package is a direct dependency or not
 		direct := slices.Contains(directDeps, i)
-		lib.Relationship = lo.Ternary(direct, types.RelationshipDirect, types.RelationshipIndirect)
+		pkg.Relationship = lo.Ternary(direct, ftypes.RelationshipDirect, ftypes.RelationshipIndirect)
 
-		parsed[i] = lib
+		parsed[i] = pkg
 	}
 
 	// Parse dependency graph
 	for i, node := range lock.GraphLock.Nodes {
-		lib, ok := parsed[i]
+		pkg, ok := parsed[i]
 		if !ok {
 			continue
 		}
@@ -91,40 +92,35 @@ func (p *Parser) parseV1(lock LockFile) ([]types.Library, []types.Dependency, er
 			}
 		}
 		if len(childDeps) != 0 {
-			deps = append(deps, types.Dependency{
-				ID:        lib.ID,
+			deps = append(deps, ftypes.Dependency{
+				ID:        pkg.ID,
 				DependsOn: childDeps,
 			})
 		}
 
-		libs = append(libs, lib)
+		pkgs = append(pkgs, pkg)
 	}
-	return libs, deps, nil
+	return pkgs, deps, nil
 }
 
-func (p *Parser) parseV2(lock LockFile) ([]types.Library, []types.Dependency, error) {
-	var libs []types.Library
+func (p *Parser) parseV2(lock LockFile) ([]ftypes.Package, []ftypes.Dependency, error) {
+	var pkgs []ftypes.Package
 
 	for _, req := range lock.Requires {
-		lib, err := toLibrary(req.Dependency, req.StartLine, req.EndLine)
+		pkg, err := toPackage(req.Dependency, req.Location)
 		if err != nil {
-			p.logger.Debug("Creating library entry from requirement failed", err)
+			p.logger.Debug("Creating package entry from requirement failed", log.Err(err))
 			continue
 		}
 
-		libs = append(libs, lib)
+		pkgs = append(pkgs, pkg)
 	}
-	return libs, []types.Dependency{}, nil
+	return pkgs, []ftypes.Dependency{}, nil
 }
 
-func (p *Parser) Parse(r xio.ReadSeekerAt) ([]types.Library, []types.Dependency, error) {
+func (p *Parser) Parse(r xio.ReadSeekerAt) ([]ftypes.Package, []ftypes.Dependency, error) {
 	var lock LockFile
-
-	input, err := io.ReadAll(r)
-	if err != nil {
-		return nil, nil, xerrors.Errorf("failed to read conan lock file: %w", err)
-	}
-	if err := jfather.Unmarshal(input, &lock); err != nil {
+	if err := xjson.UnmarshalRead(r, &lock); err != nil {
 		return nil, nil, xerrors.Errorf("failed to decode conan lock file: %w", err)
 	}
 
@@ -132,11 +128,10 @@ func (p *Parser) Parse(r xio.ReadSeekerAt) ([]types.Library, []types.Dependency,
 	if lock.GraphLock.Nodes != nil {
 		p.logger.Debug("Handling conan lockfile as v1.x")
 		return p.parseV1(lock)
-	} else {
-		// try to parse requirements as conan v2.x
-		p.logger.Debug("Handling conan lockfile as v2.x")
-		return p.parseV2(lock)
 	}
+	// try to parse requirements as conan v2.x
+	p.logger.Debug("Handling conan lockfile as v2.x")
+	return p.parseV2(lock)
 }
 
 func parsePackage(text string) (string, string, error) {
@@ -153,42 +148,15 @@ func parsePackage(text string) (string, string, error) {
 	return ss[0], ss[1], nil
 }
 
-func toLibrary(pkg string, startLine, endLine int) (types.Library, error) {
+func toPackage(pkg string, location xjson.Location) (ftypes.Package, error) {
 	name, version, err := parsePackage(pkg)
 	if err != nil {
-		return types.Library{}, err
+		return ftypes.Package{}, err
 	}
-	return types.Library{
-		ID:      dependency.ID(ftypes.Conan, name, version),
-		Name:    name,
-		Version: version,
-		Locations: []types.Location{
-			{
-				StartLine: startLine,
-				EndLine:   endLine,
-			},
-		},
+	return ftypes.Package{
+		ID:        dependency.ID(ftypes.Conan, name, version),
+		Name:      name,
+		Version:   version,
+		Locations: []ftypes.Location{ftypes.Location(location)},
 	}, nil
-}
-
-// UnmarshalJSONWithMetadata needed to detect start and end lines of deps
-func (n *Node) UnmarshalJSONWithMetadata(node jfather.Node) error {
-	if err := node.Decode(&n); err != nil {
-		return err
-	}
-	// Decode func will overwrite line numbers if we save them first
-	n.StartLine = node.Range().Start.Line
-	n.EndLine = node.Range().End.Line
-	return nil
-}
-
-func (r *Require) UnmarshalJSONWithMetadata(node jfather.Node) error {
-	var dep string
-	if err := node.Decode(&dep); err != nil {
-		return err
-	}
-	r.Dependency = dep
-	r.StartLine = node.Range().Start.Line
-	r.EndLine = node.Range().End.Line
-	return nil
 }

@@ -1,19 +1,19 @@
 package oracle
 
 import (
-	"context"
-	"github.com/aquasecurity/trivy/pkg/clock"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/aquasecurity/trivy-db/pkg/db"
 	dbTypes "github.com/aquasecurity/trivy-db/pkg/types"
 	"github.com/aquasecurity/trivy-db/pkg/vulnsrc/vulnerability"
-	"github.com/aquasecurity/trivy/pkg/dbtest"
+	"github.com/aquasecurity/trivy/internal/dbtest"
+	"github.com/aquasecurity/trivy/pkg/clock"
 	ftypes "github.com/aquasecurity/trivy/pkg/fanal/types"
 	"github.com/aquasecurity/trivy/pkg/types"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 func TestScanner_IsSupportedVersion(t *testing.T) {
@@ -82,14 +82,13 @@ func TestScanner_IsSupportedVersion(t *testing.T) {
 	for testName, tt := range tests {
 		s := NewScanner()
 		t.Run(testName, func(t *testing.T) {
-			ctx := clock.With(context.Background(), tt.now)
+			ctx := clock.With(t.Context(), tt.now)
 			actual := s.IsSupportedVersion(ctx, tt.osFamily, tt.osVersion)
 			if actual != tt.expected {
 				t.Errorf("[%s] got %v, want %v", testName, actual, tt.expected)
 			}
 		})
 	}
-
 }
 
 func TestScanner_Detect(t *testing.T) {
@@ -130,6 +129,60 @@ func TestScanner_Detect(t *testing.T) {
 					PkgName:          "curl",
 					InstalledVersion: "7.29.0-59.0.1.el7",
 					FixedVersion:     "7.29.0-59.0.1.el7_9.1",
+					DataSource: &dbTypes.DataSource{
+						ID:   vulnerability.OracleOVAL,
+						Name: "Oracle Linux OVAL definitions",
+						URL:  "https://linux.oracle.com/security/oval/",
+					},
+				},
+			},
+		},
+		{
+			name: "different fixed versions for different arches",
+			fixtures: []string{
+				"testdata/fixtures/oracle7.yaml",
+				"testdata/fixtures/data-source.yaml",
+			},
+			args: args{
+				osVer: "7",
+				pkgs: []ftypes.Package{
+					{
+						Name:       "rsyslog",
+						Version:    "8.24.0",
+						Release:    "57.0.0.el7",
+						Arch:       "x86_64",
+						SrcName:    "rsyslog",
+						SrcVersion: "8.24.0",
+						SrcRelease: "57.0.0.el7",
+					},
+					{
+						Name:       "rsyslog",
+						Version:    "8.24.0",
+						Release:    "57.0.0.el7",
+						Arch:       "aarch64",
+						SrcName:    "rsyslog",
+						SrcVersion: "8.24.0",
+						SrcRelease: "57.0.0.el7",
+					},
+				},
+			},
+			want: []types.DetectedVulnerability{
+				{
+					VulnerabilityID:  "CVE-2022-24903",
+					PkgName:          "rsyslog",
+					InstalledVersion: "8.24.0-57.0.0.el7",
+					FixedVersion:     "8.24.0-57.0.1.el7_9.3",
+					DataSource: &dbTypes.DataSource{
+						ID:   vulnerability.OracleOVAL,
+						Name: "Oracle Linux OVAL definitions",
+						URL:  "https://linux.oracle.com/security/oval/",
+					},
+				},
+				{
+					VulnerabilityID:  "CVE-2022-24903",
+					PkgName:          "rsyslog",
+					InstalledVersion: "8.24.0-57.0.0.el7",
+					FixedVersion:     "8.24.0-57.0.4.el7_9.3",
 					DataSource: &dbTypes.DataSource{
 						ID:   vulnerability.OracleOVAL,
 						Name: "Oracle Linux OVAL definitions",
@@ -221,6 +274,42 @@ func TestScanner_Detect(t *testing.T) {
 			},
 		},
 		{
+			name: "with fips",
+			fixtures: []string{
+				"testdata/fixtures/oracle7.yaml",
+				"testdata/fixtures/data-source.yaml",
+			},
+			args: args{
+				osVer: "7",
+				pkgs: []ftypes.Package{
+					{
+						Name:       "gnutls",
+						Epoch:      10,
+						Version:    "3.6.15",
+						Release:    "4.0.1.el8_fips",
+						Arch:       "x86_64",
+						SrcEpoch:   2,
+						SrcName:    "gnutls",
+						SrcVersion: "3.6.15",
+						SrcRelease: "4.0.1.el8_fips",
+					},
+				},
+			},
+			want: []types.DetectedVulnerability{
+				{
+					VulnerabilityID:  "CVE-2021-20232",
+					PkgName:          "gnutls",
+					InstalledVersion: "10:3.6.15-4.0.1.el8_fips",
+					FixedVersion:     "10:3.6.16-4.0.1.el8_fips",
+					DataSource: &dbTypes.DataSource{
+						ID:   vulnerability.OracleOVAL,
+						Name: "Oracle Linux OVAL definitions",
+						URL:  "https://linux.oracle.com/security/oval/",
+					},
+				},
+			},
+		},
+		{
 			name: "malformed",
 			fixtures: []string{
 				"testdata/fixtures/invalid-type.yaml",
@@ -240,7 +329,7 @@ func TestScanner_Detect(t *testing.T) {
 					},
 				},
 			},
-			wantErr: "failed to unmarshal advisory JSON",
+			wantErr: "failed to get Oracle Linux advisory",
 		},
 	}
 
@@ -250,15 +339,12 @@ func TestScanner_Detect(t *testing.T) {
 			defer db.Close()
 
 			s := NewScanner()
-			got, err := s.Detect(nil, tt.args.osVer, nil, tt.args.pkgs)
+			got, err := s.Detect(t.Context(), tt.args.osVer, nil, tt.args.pkgs)
 			if tt.wantErr != "" {
-				require.NotNil(t, err)
-				assert.Contains(t, err.Error(), tt.wantErr)
+				require.ErrorContains(t, err, tt.wantErr)
 				return
-			} else {
-				assert.NoError(t, err)
 			}
-
+			require.NoError(t, err)
 			assert.Equal(t, tt.want, got)
 		})
 	}

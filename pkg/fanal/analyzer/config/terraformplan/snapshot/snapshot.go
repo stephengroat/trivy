@@ -6,7 +6,7 @@ import (
 
 	"github.com/aquasecurity/trivy/pkg/fanal/analyzer"
 	"github.com/aquasecurity/trivy/pkg/fanal/analyzer/config"
-	"github.com/aquasecurity/trivy/pkg/misconf"
+	"github.com/aquasecurity/trivy/pkg/iac/detection"
 )
 
 const (
@@ -25,13 +25,13 @@ type terraformPlanConfigAnalyzer struct {
 }
 
 func newTerraformPlanSnapshotConfigAnalyzer(opts analyzer.AnalyzerOptions) (analyzer.PostAnalyzer, error) {
-	a, err := config.NewAnalyzer(analyzerType, version, misconf.NewTerraformPlanSnapshotScanner, opts)
+	a, err := config.NewAnalyzer(analyzerType, version, detection.FileTypeTerraformPlanSnapshot, opts)
 	if err != nil {
 		return nil, err
 	}
 	return &terraformPlanConfigAnalyzer{Analyzer: a}, nil
 }
 
-func (*terraformPlanConfigAnalyzer) Required(filePath string, fi os.FileInfo) bool {
+func (*terraformPlanConfigAnalyzer) Required(filePath string, _ os.FileInfo) bool {
 	return filepath.Ext(filePath) == ".tfplan" || filepath.Base(filePath) == "tfplan"
 }

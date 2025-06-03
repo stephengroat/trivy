@@ -10,9 +10,12 @@ import (
 	"github.com/aquasecurity/trivy/pkg/detector/ospkg/alma"
 	"github.com/aquasecurity/trivy/pkg/detector/ospkg/alpine"
 	"github.com/aquasecurity/trivy/pkg/detector/ospkg/amazon"
+	"github.com/aquasecurity/trivy/pkg/detector/ospkg/azure"
+	"github.com/aquasecurity/trivy/pkg/detector/ospkg/bottlerocket"
 	"github.com/aquasecurity/trivy/pkg/detector/ospkg/chainguard"
 	"github.com/aquasecurity/trivy/pkg/detector/ospkg/debian"
-	"github.com/aquasecurity/trivy/pkg/detector/ospkg/mariner"
+	"github.com/aquasecurity/trivy/pkg/detector/ospkg/echo"
+	"github.com/aquasecurity/trivy/pkg/detector/ospkg/minimos"
 	"github.com/aquasecurity/trivy/pkg/detector/ospkg/oracle"
 	"github.com/aquasecurity/trivy/pkg/detector/ospkg/photon"
 	"github.com/aquasecurity/trivy/pkg/detector/ospkg/redhat"
@@ -30,21 +33,27 @@ var (
 	ErrUnsupportedOS = xerrors.New("unsupported os")
 
 	drivers = map[ftypes.OSType]Driver{
-		ftypes.Alpine:       alpine.NewScanner(),
-		ftypes.Alma:         alma.NewScanner(),
-		ftypes.Amazon:       amazon.NewScanner(),
-		ftypes.CBLMariner:   mariner.NewScanner(),
-		ftypes.Debian:       debian.NewScanner(),
-		ftypes.Ubuntu:       ubuntu.NewScanner(),
-		ftypes.RedHat:       redhat.NewScanner(),
-		ftypes.CentOS:       redhat.NewScanner(),
-		ftypes.Rocky:        rocky.NewScanner(),
-		ftypes.Oracle:       oracle.NewScanner(),
-		ftypes.OpenSUSELeap: suse.NewScanner(suse.OpenSUSE),
-		ftypes.SLES:         suse.NewScanner(suse.SUSEEnterpriseLinux),
-		ftypes.Photon:       photon.NewScanner(),
-		ftypes.Wolfi:        wolfi.NewScanner(),
-		ftypes.Chainguard:   chainguard.NewScanner(),
+		ftypes.Alpine:             alpine.NewScanner(),
+		ftypes.Alma:               alma.NewScanner(),
+		ftypes.Amazon:             amazon.NewScanner(),
+		ftypes.Azure:              azure.NewAzureScanner(),
+		ftypes.Bottlerocket:       bottlerocket.NewScanner(),
+		ftypes.CBLMariner:         azure.NewMarinerScanner(),
+		ftypes.Debian:             debian.NewScanner(),
+		ftypes.Ubuntu:             ubuntu.NewScanner(),
+		ftypes.RedHat:             redhat.NewScanner(),
+		ftypes.CentOS:             redhat.NewScanner(),
+		ftypes.Rocky:              rocky.NewScanner(),
+		ftypes.Oracle:             oracle.NewScanner(),
+		ftypes.OpenSUSETumbleweed: suse.NewScanner(suse.OpenSUSETumbleweed),
+		ftypes.OpenSUSELeap:       suse.NewScanner(suse.OpenSUSE),
+		ftypes.SLES:               suse.NewScanner(suse.SUSEEnterpriseLinux),
+		ftypes.SLEMicro:           suse.NewScanner(suse.SUSEEnterpriseLinuxMicro),
+		ftypes.Photon:             photon.NewScanner(),
+		ftypes.Wolfi:              wolfi.NewScanner(),
+		ftypes.Chainguard:         chainguard.NewScanner(),
+		ftypes.Echo:               echo.NewScanner(),
+		ftypes.MinimOS:            minimos.NewScanner(),
 	}
 )
 
@@ -72,7 +81,7 @@ func Detect(ctx context.Context, _, osFamily ftypes.OSType, osName string, repo 
 
 	// Package `gpg-pubkey` doesn't use the correct version.
 	// We don't need to find vulnerabilities for this package.
-	filteredPkgs := lo.Filter(pkgs, func(pkg ftypes.Package, index int) bool {
+	filteredPkgs := lo.Filter(pkgs, func(pkg ftypes.Package, _ int) bool {
 		return pkg.Name != "gpg-pubkey"
 	})
 	vulns, err := driver.Detect(ctx, osName, repo, filteredPkgs)

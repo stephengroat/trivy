@@ -4,7 +4,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestTryOCI(t *testing.T) {
@@ -61,10 +61,9 @@ func TestTryOCI(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			_, err := tryOCI(test.ociImagePath)
 			if test.wantErr != "" {
-				assert.NotNil(t, err)
-				assert.Contains(t, err.Error(), test.wantErr, err)
+				require.ErrorContains(t, err, test.wantErr, err)
 			} else {
-				assert.NoError(t, err)
+				require.NoError(t, err)
 			}
 		})
 	}

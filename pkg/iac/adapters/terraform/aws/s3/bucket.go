@@ -26,6 +26,7 @@ func (a *adapter) adaptBuckets() []s3.Bucket {
 			Versioning:                    getVersioning(block, a),
 			Logging:                       getLogging(block, a),
 			ACL:                           getBucketAcl(block, a),
+			Grants:                        getGrants(block, a),
 			AccelerateConfigurationStatus: getAccelerateStatus(block, a),
 			BucketLocation:                block.GetAttribute("region").AsStringValueOrDefault("", block),
 			LifecycleConfiguration:        getLifecycle(block, a),
@@ -193,6 +194,55 @@ func getBucketAcl(block *terraform.Block, a *adapter) iacTypes.StringValue {
 	return iacTypes.StringDefault("private", block.GetMetadata())
 }
 
+func getGrants(block *terraform.Block, a *adapter) []s3.Grant {
+	if val, ok := applyForBucketRelatedResource(a, block, "aws_s3_bucket_acl", func(resource *terraform.Block) []s3.Grant {
+		var grants []s3.Grant
+
+		if acessControlPolicy := resource.GetBlock("access_control_policy"); acessControlPolicy.IsNotNil() {
+			for _, grantBlock := range acessControlPolicy.GetBlocks("grant") {
+				grant := s3.Grant{
+					Metadata: grantBlock.GetMetadata(),
+					Permissions: iacTypes.StringValueList{
+						grantBlock.GetAttribute("permission").AsStringValueOrDefault("", grantBlock),
+					},
+				}
+
+				if granteeBlock := grantBlock.GetBlock("grantee"); granteeBlock.IsNotNil() {
+					grant.Grantee = s3.Grantee{
+						Metadata: granteeBlock.GetMetadata(),
+						Type:     granteeBlock.GetAttribute("type").AsStringValueOrDefault("", granteeBlock),
+						URI:      granteeBlock.GetAttribute("uri").AsStringValueOrDefault("", granteeBlock),
+					}
+				}
+
+				grants = append(grants, grant)
+			}
+		}
+
+		return grants
+
+	}); ok {
+		return val
+	}
+
+	var grants []s3.Grant
+	for _, grantBlock := range block.GetBlocks("grant") {
+		grant := s3.Grant{
+			Metadata:    grantBlock.GetMetadata(),
+			Permissions: grantBlock.GetAttribute("permissions").AsStringValueSliceOrEmpty(),
+			Grantee: s3.Grantee{
+				Metadata: grantBlock.GetMetadata(),
+				Type:     grantBlock.GetAttribute("type").AsStringValueOrDefault("", grantBlock),
+				URI:      grantBlock.GetAttribute("uri").AsStringValueOrDefault("", grantBlock),
+			},
+		}
+
+		grants = append(grants, grant)
+	}
+
+	return grants
+}
+
 func isEncrypted(sseConfgihuration *terraform.Block) iacTypes.BoolValue {
 	return terraform.MapNestedAttribute(
 		sseConfgihuration,
@@ -213,7 +263,7 @@ func isEncrypted(sseConfgihuration *terraform.Block) iacTypes.BoolValue {
 
 func hasLogging(b *terraform.Block) iacTypes.BoolValue {
 	if loggingBlock := b.GetBlock("logging"); loggingBlock.IsNotNil() {
-		if targetAttr := loggingBlock.GetAttribute("target_bucket"); targetAttr.IsNotNil() && targetAttr.IsNotEmpty() {
+		if targetAttr := loggingBlock.GetAttribute("target_bucket"); targetAttr.IsNotNil() && !targetAttr.IsEmpty() {
 			return iacTypes.Bool(true, targetAttr.GetMetadata())
 		}
 		return iacTypes.BoolDefault(false, loggingBlock.GetMetadata())

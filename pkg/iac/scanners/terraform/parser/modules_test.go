@@ -1,15 +1,14 @@
 package parser
 
 import (
-	"context"
 	"path"
 	"testing"
 
-	"github.com/aquasecurity/trivy/internal/testutil"
 	"github.com/samber/lo"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"golang.org/x/exp/maps"
+
+	"github.com/aquasecurity/trivy/internal/testutil"
 )
 
 func TestFindRootModules(t *testing.T) {
@@ -42,7 +41,10 @@ module "this" {
   source = "../modules/s3"
 }`,
 			},
-			expected: []string{"code", "code/example"},
+			expected: []string{
+				"code",
+				"code/example",
+			},
 		},
 		{
 			name: "without module block",
@@ -50,7 +52,10 @@ module "this" {
 				"code/infra1/main.tf": `resource "test" "this" {}`,
 				"code/infra2/main.tf": `resource "test" "this" {}`,
 			},
-			expected: []string{"code/infra1", "code/infra2"},
+			expected: []string{
+				"code/infra1",
+				"code/infra2",
+			},
 		},
 	}
 
@@ -59,11 +64,11 @@ module "this" {
 			fsys := testutil.CreateFS(t, tt.files)
 			parser := New(fsys, "", OptionStopOnHCLError(true))
 
-			modules := lo.Map(maps.Keys(tt.files), func(p string, _ int) string {
+			modules := lo.Map(lo.Keys(tt.files), func(p string, _ int) string {
 				return path.Dir(p)
 			})
 
-			got, err := parser.FindRootModules(context.TODO(), modules)
+			got, err := parser.FindRootModules(t.Context(), modules)
 			require.NoError(t, err)
 			assert.Equal(t, tt.expected, got)
 		})

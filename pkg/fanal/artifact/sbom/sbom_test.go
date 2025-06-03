@@ -1,36 +1,36 @@
 package sbom_test
 
 import (
-	"context"
-	"errors"
-	"github.com/package-url/packageurl-go"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/package-url/packageurl-go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/aquasecurity/trivy/internal/cachetest"
+	"github.com/aquasecurity/trivy/pkg/cache"
 	"github.com/aquasecurity/trivy/pkg/fanal/artifact"
 	"github.com/aquasecurity/trivy/pkg/fanal/artifact/sbom"
-	"github.com/aquasecurity/trivy/pkg/fanal/cache"
 	"github.com/aquasecurity/trivy/pkg/fanal/types"
 )
 
 func TestArtifact_Inspect(t *testing.T) {
 	tests := []struct {
-		name               string
-		filePath           string
-		putBlobExpectation cache.ArtifactCachePutBlobExpectation
-		want               types.ArtifactReference
-		wantErr            []string
+		name       string
+		filePath   string
+		setUpCache func(t *testing.T) cache.Cache
+		wantBlobs  []cachetest.WantBlob
+		want       artifact.Reference
+		wantErr    []string
 	}{
 		{
 			name:     "happy path",
 			filePath: filepath.Join("testdata", "bom.json"),
-			putBlobExpectation: cache.ArtifactCachePutBlobExpectation{
-				Args: cache.ArtifactCachePutBlobArgs{
-					BlobID: "sha256:f6d4bf4edf2818010ef009b6cd0f837c94dac3464d99e665470c8d05648478e3",
+			wantBlobs: []cachetest.WantBlob{
+				{
+					ID: "sha256:76bc49ae239d24c6a122e730bafb9d5295d0af380492aeb92a3bf34bea3a14ca",
 					BlobInfo: types.BlobInfo{
 						SchemaVersion: types.BlobJSONSchemaVersion,
 						OS: types.OS{
@@ -73,7 +73,7 @@ func TestArtifact_Inspect(t *testing.T) {
 							{
 								Type:     "composer",
 								FilePath: "app/composer/composer.lock",
-								Libraries: types.Packages{
+								Packages: types.Packages{
 									{
 										ID:      "pear/log@1.13.1",
 										Name:    "pear/log",
@@ -113,7 +113,7 @@ func TestArtifact_Inspect(t *testing.T) {
 							{
 								Type:     "gobinary",
 								FilePath: "app/gobinary/gobinary",
-								Libraries: types.Packages{
+								Packages: types.Packages{
 									{
 										ID:      "github.com/package-url/packageurl-go@v0.1.1-0.20220203205134-d70459300c8a",
 										Name:    "github.com/package-url/packageurl-go",
@@ -136,7 +136,7 @@ func TestArtifact_Inspect(t *testing.T) {
 							{
 								Type:     "jar",
 								FilePath: "",
-								Libraries: types.Packages{
+								Packages: types.Packages{
 									{
 										ID:      "org.codehaus.mojo:child-project:1.0",
 										Name:    "org.codehaus.mojo:child-project",
@@ -161,7 +161,7 @@ func TestArtifact_Inspect(t *testing.T) {
 							{
 								Type:     "node-pkg",
 								FilePath: "",
-								Libraries: types.Packages{
+								Packages: types.Packages{
 									{
 										ID:       "bootstrap@5.0.2",
 										Name:     "bootstrap",
@@ -186,23 +186,22 @@ func TestArtifact_Inspect(t *testing.T) {
 						},
 					},
 				},
-				Returns: cache.ArtifactCachePutBlobReturns{},
 			},
-			want: types.ArtifactReference{
+			want: artifact.Reference{
 				Name: filepath.Join("testdata", "bom.json"),
-				Type: types.ArtifactCycloneDX,
-				ID:   "sha256:f6d4bf4edf2818010ef009b6cd0f837c94dac3464d99e665470c8d05648478e3",
+				Type: types.TypeCycloneDX,
+				ID:   "sha256:76bc49ae239d24c6a122e730bafb9d5295d0af380492aeb92a3bf34bea3a14ca",
 				BlobIDs: []string{
-					"sha256:f6d4bf4edf2818010ef009b6cd0f837c94dac3464d99e665470c8d05648478e3",
+					"sha256:76bc49ae239d24c6a122e730bafb9d5295d0af380492aeb92a3bf34bea3a14ca",
 				},
 			},
 		},
 		{
 			name:     "happy path for sbom attestation",
 			filePath: filepath.Join("testdata", "sbom.cdx.intoto.jsonl"),
-			putBlobExpectation: cache.ArtifactCachePutBlobExpectation{
-				Args: cache.ArtifactCachePutBlobArgs{
-					BlobID: "sha256:f6d4bf4edf2818010ef009b6cd0f837c94dac3464d99e665470c8d05648478e3",
+			wantBlobs: []cachetest.WantBlob{
+				{
+					ID: "sha256:76bc49ae239d24c6a122e730bafb9d5295d0af380492aeb92a3bf34bea3a14ca",
 					BlobInfo: types.BlobInfo{
 						SchemaVersion: types.BlobJSONSchemaVersion,
 						OS: types.OS{
@@ -245,7 +244,7 @@ func TestArtifact_Inspect(t *testing.T) {
 							{
 								Type:     "composer",
 								FilePath: "app/composer/composer.lock",
-								Libraries: types.Packages{
+								Packages: types.Packages{
 									{
 										ID:      "pear/log@1.13.1",
 										Name:    "pear/log",
@@ -285,7 +284,7 @@ func TestArtifact_Inspect(t *testing.T) {
 							{
 								Type:     "gobinary",
 								FilePath: "app/gobinary/gobinary",
-								Libraries: types.Packages{
+								Packages: types.Packages{
 									{
 										ID:      "github.com/package-url/packageurl-go@v0.1.1-0.20220203205134-d70459300c8a",
 										Name:    "github.com/package-url/packageurl-go",
@@ -308,7 +307,7 @@ func TestArtifact_Inspect(t *testing.T) {
 							{
 								Type:     "jar",
 								FilePath: "",
-								Libraries: types.Packages{
+								Packages: types.Packages{
 									{
 										ID:      "org.codehaus.mojo:child-project:1.0",
 										Name:    "org.codehaus.mojo:child-project",
@@ -333,7 +332,7 @@ func TestArtifact_Inspect(t *testing.T) {
 							{
 								Type:     "node-pkg",
 								FilePath: "",
-								Libraries: types.Packages{
+								Packages: types.Packages{
 									{
 										ID:      "bootstrap@5.0.2",
 										Name:    "bootstrap",
@@ -358,14 +357,13 @@ func TestArtifact_Inspect(t *testing.T) {
 						},
 					},
 				},
-				Returns: cache.ArtifactCachePutBlobReturns{},
 			},
-			want: types.ArtifactReference{
+			want: artifact.Reference{
 				Name: filepath.Join("testdata", "sbom.cdx.intoto.jsonl"),
-				Type: types.ArtifactCycloneDX,
-				ID:   "sha256:f6d4bf4edf2818010ef009b6cd0f837c94dac3464d99e665470c8d05648478e3",
+				Type: types.TypeCycloneDX,
+				ID:   "sha256:76bc49ae239d24c6a122e730bafb9d5295d0af380492aeb92a3bf34bea3a14ca",
 				BlobIDs: []string{
-					"sha256:f6d4bf4edf2818010ef009b6cd0f837c94dac3464d99e665470c8d05648478e3",
+					"sha256:76bc49ae239d24c6a122e730bafb9d5295d0af380492aeb92a3bf34bea3a14ca",
 				},
 			},
 		},
@@ -380,35 +378,24 @@ func TestArtifact_Inspect(t *testing.T) {
 		{
 			name:     "sad path PutBlob returns an error",
 			filePath: filepath.Join("testdata", "os-only-bom.json"),
-			putBlobExpectation: cache.ArtifactCachePutBlobExpectation{
-				Args: cache.ArtifactCachePutBlobArgs{
-					BlobID: "sha256:911a6c875617315c51971dddf19fa2d47d6132cd14e9c6a87deb074afaf07818",
-					BlobInfo: types.BlobInfo{
-						SchemaVersion: types.BlobJSONSchemaVersion,
-						OS: types.OS{
-							Family: "alpine",
-							Name:   "3.16.0",
-						},
-					},
-				},
-				Returns: cache.ArtifactCachePutBlobReturns{
-					Err: errors.New("error"),
-				},
+			setUpCache: func(_ *testing.T) cache.Cache {
+				return cachetest.NewErrorCache(cachetest.ErrorCacheOptions{
+					PutBlob: true,
+				})
 			},
 			wantErr: []string{"failed to store blob"},
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			c := new(cache.MockArtifactCache)
-			c.ApplyPutBlobExpectation(tt.putBlobExpectation)
+			c := cachetest.NewCache(t, tt.setUpCache)
 
 			a, err := sbom.NewArtifact(tt.filePath, c, artifact.Option{})
 			require.NoError(t, err)
 
-			got, err := a.Inspect(context.Background())
+			got, err := a.Inspect(t.Context())
 			if len(tt.wantErr) > 0 {
-				require.NotNil(t, err)
+				require.Error(t, err)
 				found := false
 				for _, wantErr := range tt.wantErr {
 					if strings.Contains(err.Error(), wantErr) {
@@ -425,6 +412,7 @@ func TestArtifact_Inspect(t *testing.T) {
 
 			require.NoError(t, err)
 			assert.Equal(t, tt.want, got)
+			cachetest.AssertBlobs(t, c, tt.wantBlobs)
 		})
 	}
 }
